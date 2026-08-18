@@ -11,12 +11,14 @@ from datetime import date, time
 from decimal import Decimal
 from typing import Any, Iterable
 
-from db.connection import execute, fetch_all, fetch_one
+from db.connection import execute, fetch_all, fetch_one, transaction
 from lib.models import (
     Booking,
     Client,
     ClientRate,
     Owner,
+    QuoteLine,
+    SavedQuote,
     SeasonDefinition,
     TurnoverRule,
     Unit,
@@ -412,3 +414,97 @@ def _as_clash(error: Exception) -> Exception:
             "someone may have booked it a moment ago."
         )
     return error
+
+
+# --- Quotes ---------------------------------------------------------------
+
+def _quote_line(row: dict[str, Any]) -> QuoteLine:
+    return QuoteLine(
+        season_label=row["season_label"],
+        first_night=row["first_night"],
+        last_night=row["last_night"],
+        nights=row["nights"],
+        nightly_rate=row["nightly_rate"],
+        subtotal=row["subtotal"],
+    )
+
+
+def _saved_quote(row: dict[str, Any], lines: tuple[QuoteLine, ...] = ()) -> SavedQuote:
+    return SavedQuote(
+        id=row["id"],
+        unit_id=row["unit_id"],
+        client_id=row["client_id"],
+        check_in=row["check_in"],
+        check_out=row["check_out"],
+        guests=row["guests"],
+        total=row["total"],
+        status=row["status"],
+        generated_on=row["generated_on"],
+        lines=lines,
+        notes=row["notes"],
+        booking_id=row["booking_id"],
+    )
+
+
+def save_quote(
+    unit_id: int,
+    client_id: int | None,
+    check_in: date,
+    check_out: date,
+    guests: int | None,
+    total: Decimal,
+    lines: Iterable[QuoteLine],
+    notes: str = "",
+) -> int:
+    """Store a quote and the priced lines behind it, as one unit.
+
+    Written in a transaction because a quote without its breakdown is worse
+    than no quote at all - it would reopen showing a total nobody can explain.
+    """
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO quotes (unit_id, client_id, check_in, check_out, guests,
+                                   total, notes)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (unit_id, client_id, check_in, check_out, guests, total, notes),
+        )
+        quote_id = cursor.fetchone()["id"]
+        for number, line in enumerate(lines, start=1):
+            cursor.execute(
+                """INSERT INTO quote_lines (quote_id, line_number, season_label,
+                                            first_night, last_night, nights,
+                                            nightly_rate, subtotal)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (quote_id, number, line.season_label, line.first_night, line.last_night,
+                 line.nights, line.nightly_rate, line.subtotal),
+            )
+    return quote_id
+
+
+def list_quotes(statuses: Iterable[str] | None = None) -> list[SavedQuote]:
+    """Quotes newest first, without their lines - the list view does not need them."""
+    sql = "SELECT * FROM quotes"
+    params: tuple[Any, ...] = ()
+    if statuses is not None:
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        sql += " WHERE status = ANY(%s)"
+        params = (statuses,)
+    rows = fetch_all(sql + " ORDER BY generated_on DESC, id DESC", params)
+    return [_saved_quote(row) for row in rows]
+
+
+def get_quote(quote_id: int) -> SavedQuote | None:
+    """One quote with the priced lines exactly as they were sent."""
+    row = fetch_one("SELECT * FROM quotes WHERE id = %s", (quote_id,))
+    if row is None:
+        return None
+    lines = fetch_all(
+        "SELECT * FROM quote_lines WHERE quote_id = %s ORDER BY line_number", (quote_id,)
+    )
+    return _saved_quote(row, tuple(_quote_line(line) for line in lines))
+
+
+def set_quote_status(quote_id: int, status: str) -> None:
+    execute("UPDATE quotes SET status = %s WHERE id = %s", (status, quote_id))

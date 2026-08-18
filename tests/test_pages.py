@@ -16,10 +16,13 @@ from streamlit.testing.v1 import AppTest
 from db import connection, queries
 from lib.models import (
     CONFIRMED,
+    QUOTE_OPEN,
     Booking,
     Client,
     ClientRate,
     Owner,
+    QuoteLine,
+    SavedQuote,
     SeasonDefinition,
     TurnoverRule,
     Unit,
@@ -29,9 +32,11 @@ from lib.models import (
 PAGES = [
     "app.py",
     "pages/1_Calendar.py",
+    "pages/2_Search.py",
     "pages/3_Units.py",
     "pages/4_Seasons.py",
     "pages/5_Bookings.py",
+    "pages/6_Quotes.py",
 ]
 
 TODAY = date.today()
@@ -57,6 +62,14 @@ BOOKINGS = [
             Decimal("12000.00"), "Repeat guest"),
 ]
 RULES = [TurnoverRule(2, "High", 1)]
+QUOTE_LINES = (
+    QuoteLine("Medium", TODAY, TODAY + timedelta(days=2), 3,
+              Decimal("2400.00"), Decimal("7200.00")),
+)
+QUOTES = [
+    SavedQuote(1, 2, 1, TODAY, TODAY + timedelta(days=3), 4, Decimal("7200.00"),
+               QUOTE_OPEN, TODAY - timedelta(days=9), QUOTE_LINES, "", None),
+]
 BLOCKS = [UnitBlock(1, 2, TODAY + timedelta(days=10), TODAY + timedelta(days=12), "Repaint")]
 
 
@@ -77,6 +90,10 @@ def stubbed_database(monkeypatch):
     )
     monkeypatch.setattr(queries, "list_turnover_rules", lambda unit_id=None: RULES)
     monkeypatch.setattr(queries, "list_unit_blocks", lambda start=None, end=None: BLOCKS)
+    monkeypatch.setattr(queries, "list_quotes", lambda statuses=None: QUOTES)
+    monkeypatch.setattr(queries, "get_quote", lambda quote_id: QUOTES[0])
+    monkeypatch.setattr(queries, "save_quote", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(queries, "set_quote_status", lambda *args, **kwargs: None)
     return monkeypatch
 
 
@@ -91,7 +108,8 @@ def test_page_runs_without_error(path, stubbed_database):
 def test_page_runs_with_an_empty_database(path, stubbed_database, monkeypatch):
     """Day one, before anything has been captured, must not be a wall of errors."""
     for name in ("list_owners", "list_units", "list_seasons", "list_client_rates",
-                 "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks"):
+                 "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks",
+                 "list_quotes"):
         monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
     monkeypatch.setattr(queries, "list_season_years", lambda: [])
 
@@ -267,3 +285,69 @@ def test_a_reachable_but_empty_database_names_the_command_that_fixes_it(monkeypa
 
     assert not app.exception
     assert any("python -m db.migrate" in element.value for element in app.code)
+
+
+def test_search_offers_the_free_flat_and_holds_back_the_booked_one(stubbed_database):
+    """Seaview 3 is booked across today; Harbour View 6 is not."""
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30).run()
+
+    assert any("1 flat(s) available" in element.value for element in app.subheader)
+    offered = "".join(element.value for element in app.markdown)
+    assert "Harbour View 6" in offered
+    # 3 nights at the stubbed 2400 rate.
+    assert "R7 200.00" in offered
+    assert any("not available" in element.label for element in app.expander)
+
+
+def test_search_will_not_offer_a_stay_below_the_minimum(stubbed_database, monkeypatch):
+    """Both flats take 2 nights minimum, so a single night is offered by neither."""
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [],
+    )
+
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30)
+    app.run()
+    app.date_input[1].set_value(TODAY + timedelta(days=1)).run()  # check-out
+
+    assert any("0 flat(s) available" in element.value for element in app.subheader)
+    assert any("too short" in element.label for element in app.expander)
+
+
+def test_search_says_which_flats_cannot_be_priced(stubbed_database, monkeypatch):
+    """A flat with no rate on file is free but unquotable - and that is actionable."""
+    monkeypatch.setattr(queries, "list_client_rates", lambda unit_id=None, year=None: [])
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [],
+    )
+
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30).run()
+
+    assert any("cannot be priced" in element.label for element in app.expander)
+    assert any("No " in element.value and "rate is set" in element.value for element in app.warning)
+
+
+def test_quotes_page_flags_one_that_has_gone_quiet(stubbed_database):
+    """The stubbed quote went out nine days ago and is still unanswered."""
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+
+    assert any("waiting 7 days or more" in element.value for element in app.warning)
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Needing a follow-up"] == "1"
+
+
+def test_quotes_page_shows_the_lines_as_they_were_sent(stubbed_database):
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+
+    assert any("as it was quoted" in element.value for element in app.caption)
+    assert any("R7 200.00" in metric.value for metric in app.metric)
+
+
+def test_quotes_page_is_calm_when_there_are_none(stubbed_database, monkeypatch):
+    monkeypatch.setattr(queries, "list_quotes", lambda statuses=None: [])
+
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+
+    assert not app.exception
+    assert any("No quotes yet" in element.value for element in app.info)

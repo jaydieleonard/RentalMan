@@ -192,6 +192,43 @@ class QuoteLine:
     subtotal: Decimal
 
 
+# Quote statuses (6). Separate from the booking statuses above: a quote is
+# accepted or not, a booking is confirmed or not, and they are different things
+# at different moments.
+QUOTE_OPEN = "quoted"
+QUOTE_ACCEPTED = "accepted"
+QUOTE_CANCELLED = "cancelled"
+QUOTE_STATUSES = (QUOTE_OPEN, QUOTE_ACCEPTED, QUOTE_CANCELLED)
+
+
+@dataclass(frozen=True)
+class SavedQuote:
+    """A quote as it was sent, kept so it can be reopened and resent (3.5).
+
+    The priced lines are stored with it rather than recalculated on the way
+    out. A quote is a promise made on a particular day; editing next year's
+    rates must not quietly change what a guest was told last week.
+    """
+
+    id: int | None
+    unit_id: int
+    client_id: int | None
+    check_in: date
+    check_out: date
+    guests: int | None
+    total: Decimal
+    status: str
+    generated_on: date
+    lines: tuple["QuoteLine", ...] = ()
+    notes: str = ""
+    #: Set once the quote has been turned into a booking (Phase 3).
+    booking_id: int | None = None
+
+    @property
+    def nights(self) -> int:
+        return (self.check_out - self.check_in).days
+
+
 @dataclass(frozen=True)
 class StayQuote:
     """The full built-up price for one stay — the thing the client is shown."""

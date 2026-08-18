@@ -9,13 +9,13 @@ numbers referenced in the code point there.
 
 ## Status
 
-**Phase 1 is built** (spec section 9): units and owners, the shared season
-calendar, client rate files, turnover rules, and a read-only booking grid.
+**Phases 1 and 2 are built** (spec section 9):
 
-The calculations Phase 2 needs — season segmenting, quote pricing,
-minimum-stay rules and availability with turnover buffers — are already written
-and tested in `lib/`; what is missing is the search and quote screens on top of
-them.
+- Units and owners, the shared season calendar, client rate files, turnover rules
+- The booking grid, and entering bookings by hand
+- Availability search: dates and party size in, free flats out, each already priced
+- Quotes: saved with their priced lines, sent as a WhatsApp-ready message or a
+  PDF, reopened and resent later, and flagged for follow-up after seven days
 
 Bookings can be entered and corrected by hand on the Bookings page, brought
 forward from Phase 3 so the flats' existing bookings can be captured now. Every
@@ -62,9 +62,10 @@ lib/              Business logic — no database, no Streamlit, fully tested
   seasons.py        The shared season calendar and stay segmenting
   rates.py          Quote pricing and minimum-stay rules
   availability.py   Turnover buffers and what blocks a unit
+  quotes.py         The guest-facing message and the follow-up flag
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
-ui/               Streamlit-side helpers: the grid, formatting, the login gate
+ui/               Streamlit-side helpers: the grid, PDFs, formatting, login
 tests/            pytest — logic tests, plus every page run under AppTest
 ```
 
@@ -95,3 +96,7 @@ day-one case where nothing has been captured yet.
 - Only `confirmed` bookings hold dates. Enquiries and unaccepted quotes do not
   take a flat off the market (`BLOCKING_STATUSES` in `lib/models.py`).
 - Money is `Decimal` everywhere, never `float`.
+- A saved quote keeps its own priced lines. Reopening one shows what the guest
+  was told, not what today's rate file would charge.
+- The follow-up flag is derived on read, never stored — so it is always true
+  without anything having to run overnight.

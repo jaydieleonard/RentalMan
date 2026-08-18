@@ -143,6 +143,25 @@ def _run(sql: str, params: Sequence[Any] | dict[str, Any], fetch: str) -> Any:
         return None
 
 
+@contextmanager
+def transaction() -> Iterator[psycopg.Connection]:
+    """Run several statements on the shared connection as one unit.
+
+    Needed where a half-written record would be worse than none - a quote
+    without its priced lines, say. A dropped socket mid-transaction is not
+    retried: the statements may have partly run, so the caller is told rather
+    than having them silently replayed.
+    """
+    with _shared_lock:
+        connection = _shared_connection()
+        try:
+            with connection.transaction():
+                yield connection
+        except _LOST_CONNECTION:
+            _discard_shared()
+            raise
+
+
 def fetch_all(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> list[dict[str, Any]]:
     return _run(sql, params, "all")
 
