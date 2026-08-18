@@ -7,16 +7,22 @@ The connection string is read from, in order:
 2. .streamlit/secrets.toml, which is what the running app uses, and what
    Streamlit Community Cloud serves from its own secrets store on deploy.
 
-A connection is opened per call rather than held open. Neon's free tier
-suspends an idle database and drops the socket with it, so a cached connection
-would work all day and then fail on the first quiet morning - which is exactly
-when nobody wants to debug it. At two users the extra handshake costs nothing
-worth saving.
+Queries run on one shared connection that is kept open. Opening a fresh one
+costs about 1.6 seconds against a Neon instance a continent away, and a single
+page runs half a dozen queries, so paying that each time made the calendar take
+ten seconds to draw.
+
+The reason to avoid a cached connection was that Neon's free tier suspends an
+idle database and drops the socket with it, leaving a connection that looks
+fine and is not. That is handled directly instead: a dropped connection is
+recognised, thrown away and reopened, and the query is tried once more. The
+caller sees a slow query rather than an error.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Sequence
 
@@ -77,30 +83,77 @@ def database_url() -> str:
 
 @contextmanager
 def connect() -> Iterator[psycopg.Connection]:
-    """Open a connection whose rows come back as dicts, and commit on success."""
+    """Open a fresh connection of its own, and commit on success.
+
+    Used where a run needs its own transaction - the migration runner applies
+    each schema file inside one. Ordinary queries go through the shared
+    connection below instead.
+    """
     with psycopg.connect(database_url(), row_factory=dict_row) as connection:
         yield connection
 
 
+# One connection shared by every query, guarded by a lock because Streamlit can
+# run two sessions at once and a psycopg connection is not safe to use from two
+# threads at the same time.
+_shared_lock = threading.RLock()
+_shared: psycopg.Connection | None = None
+
+#: Losing the connection is expected rather than exceptional here - Neon
+#: suspends an idle database - so these are retried once on a fresh socket.
+_LOST_CONNECTION = (psycopg.OperationalError, psycopg.InterfaceError)
+
+
+def _shared_connection() -> psycopg.Connection:
+    global _shared
+    if _shared is None or _shared.closed:
+        # autocommit: every statement stands alone, so a failed one cannot
+        # leave the shared connection sitting in an aborted transaction that
+        # breaks the next caller's query.
+        _shared = psycopg.connect(database_url(), row_factory=dict_row, autocommit=True)
+    return _shared
+
+
+def _discard_shared() -> None:
+    global _shared
+    if _shared is not None:
+        try:
+            _shared.close()
+        except Exception:
+            pass
+    _shared = None
+
+
+def _run(sql: str, params: Sequence[Any] | dict[str, Any], fetch: str) -> Any:
+    with _shared_lock:
+        for attempt in (1, 2):
+            try:
+                with _shared_connection().cursor() as cursor:
+                    cursor.execute(sql, params)
+                    if fetch == "all":
+                        return cursor.fetchall()
+                    if cursor.description is None:
+                        return None
+                    return cursor.fetchone()
+            except _LOST_CONNECTION:
+                # The database went to sleep, or the socket died under us.
+                _discard_shared()
+                if attempt == 2:
+                    raise
+        return None
+
+
 def fetch_all(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> list[dict[str, Any]]:
-    with connect() as connection, connection.cursor() as cursor:
-        cursor.execute(sql, params)
-        return cursor.fetchall()
+    return _run(sql, params, "all")
 
 
 def fetch_one(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> dict[str, Any] | None:
-    with connect() as connection, connection.cursor() as cursor:
-        cursor.execute(sql, params)
-        return cursor.fetchone()
+    return _run(sql, params, "one")
 
 
 def execute(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> dict[str, Any] | None:
     """Run a write. Returns the RETURNING row if the statement has one."""
-    with connect() as connection, connection.cursor() as cursor:
-        cursor.execute(sql, params)
-        if cursor.description is None:
-            return None
-        return cursor.fetchone()
+    return _run(sql, params, "one")
 
 
 NOT_MIGRATED_HELP = """Connected to {name}, but the tables have not been created yet.
@@ -122,11 +175,11 @@ def check_connection() -> tuple[bool, str]:
     into one sentence naming the command that fixes it.
     """
     try:
-        with connect() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT current_database() AS name, to_regclass('public.units') AS units"
-            )
-            row = cursor.fetchone()
+        # Goes through the shared connection like everything else: this runs on
+        # every page load, and a fresh handshake here would undo the point.
+        row = fetch_one(
+            "SELECT current_database() AS name, to_regclass('public.units') AS units"
+        )
     except MissingDatabaseURL as missing:
         return False, str(missing)
     except Exception as error:
