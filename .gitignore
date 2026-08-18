@@ -1,0 +1,9 @@
+# Secrets — the Neon connection string lives here and must never be committed.
+.streamlit/secrets.toml
+.env
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/

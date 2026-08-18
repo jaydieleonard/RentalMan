@@ -1,0 +1,15 @@
+# RentalMan — Streamlit app against a hosted Neon Postgres database (spec §5).
+streamlit>=1.40            # the whole UI: calendar grid, forms, navigation
+psycopg[binary]>=3.2       # Postgres driver (v3, not psycopg2 — see db/connection.py)
+pandas>=2.2                # grid assembly for the calendar view
+
+# Config
+python-dotenv>=1.0         # reads DATABASE_URL from .env for local dev / CLI scripts
+
+# Tests
+pytest>=8.0
+
+# Not here yet, added when the phase that needs them lands (spec §9):
+#   reportlab / weasyprint  — quote + owner-statement PDFs (Phase 2 / Phase 5)
+#   streamlit-authenticator — login gate (§5), if Community Cloud's own
+#                             email allowlist turns out not to be enough
