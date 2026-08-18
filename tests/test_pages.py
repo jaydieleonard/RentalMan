@@ -155,7 +155,9 @@ def test_pages_explain_themselves_when_the_database_is_unreachable(monkeypatch):
     app = AppTest.from_file("pages/1_Calendar.py", default_timeout=30).run()
 
     assert not app.exception
-    assert any("cannot reach its database" in element.value for element in app.error)
+    assert any("cannot use its database" in element.value for element in app.error)
+    # The heading is the same whatever went wrong; the cause is what matters.
+    assert any("No database connection string found." in element.value for element in app.code)
 
 
 def button_labelled(app, label):
@@ -249,3 +251,19 @@ def test_a_stay_over_a_turnover_gap_warns_but_can_still_be_captured(stubbed_data
     button_labelled(app, "Save booking").click().run()
 
     assert len(recorded) == 1
+
+
+def test_a_reachable_but_empty_database_names_the_command_that_fixes_it(monkeypatch):
+    """A fresh Neon project answers fine and has no tables - say so, don't crash."""
+    from db.connection import NOT_MIGRATED_HELP
+
+    monkeypatch.setattr(
+        connection,
+        "check_connection",
+        lambda: (False, NOT_MIGRATED_HELP.format(name="neondb")),
+    )
+
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+
+    assert not app.exception
+    assert any("python -m db.migrate" in element.value for element in app.code)

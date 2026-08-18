@@ -103,14 +103,37 @@ def execute(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> dict[str, 
         return cursor.fetchone()
 
 
+NOT_MIGRATED_HELP = """Connected to {name}, but the tables have not been created yet.
+
+Run this once, from the project folder, with DATABASE_URL pointing at the same
+database:
+
+    python -m db.migrate
+
+Then reload this page."""
+
+
 def check_connection() -> tuple[bool, str]:
-    """Used by the app's home page to say plainly whether the database is reachable."""
+    """Say plainly whether the app can actually use its database.
+
+    Reaching Postgres is only half of it: a brand new Neon project answers
+    perfectly well and has nothing in it. Checking for a table we know the
+    schema creates turns "relation units does not exist" three screens later
+    into one sentence naming the command that fixes it.
+    """
     try:
         with connect() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT current_database() AS name")
+            cursor.execute(
+                "SELECT current_database() AS name, to_regclass('public.units') AS units"
+            )
             row = cursor.fetchone()
-        return True, f"Connected to {row['name']}." if row else "Connected."
     except MissingDatabaseURL as missing:
         return False, str(missing)
     except Exception as error:
         return False, f"Could not reach the database: {error}"
+
+    if row is None:
+        return False, "The database answered, but not in a way we understand."
+    if row["units"] is None:
+        return False, NOT_MIGRATED_HELP.format(name=row["name"])
+    return True, f"Connected to {row['name']}."

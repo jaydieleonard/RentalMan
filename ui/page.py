@@ -25,12 +25,10 @@ def start(title: str, icon: str = "🏖️", require_database: bool = True) -> N
     if connected:
         return
 
-    st.error("The app cannot reach its database, so there is nothing to show yet.")
+    # The message says which of the two it is - no connection string, an
+    # unreachable database, or a reachable one with no tables in it yet.
+    st.error("The app cannot use its database yet, so there is nothing to show.")
     st.code(message, language="text")
-    st.caption(
-        "Once the connection string is in place, run `python -m db.migrate` to create "
-        "the tables, then reload this page."
-    )
     st.stop()
 
 
