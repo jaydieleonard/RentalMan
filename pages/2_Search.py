@@ -34,15 +34,27 @@ if not units:
     page.no_data("units", "Units")
     st.stop()
 
-owners = {owner.id: owner for owner in queries.list_owners()}
-
 # --- What are we looking for ---------------------------------------------
 
+# Picking a check-in moves the check-out to the night after it, so the pair is
+# never left invalid while the second date is still being chosen. Done in a
+# callback because Streamlit refuses to have a widget's value rewritten once
+# that widget exists - a callback runs before it is rebuilt, so it is allowed.
+if "search_in" not in st.session_state:
+    st.session_state.search_in = date.today()
+if "search_out" not in st.session_state:
+    st.session_state.search_out = date.today() + timedelta(days=1)
+
+
+def follow_check_in() -> None:
+    st.session_state.search_out = st.session_state.search_in + timedelta(days=1)
+
+
 search = st.columns([2, 2, 1, 2])
-check_in = search[0].date_input("Check-in", value=date.today(), format="DD/MM/YYYY")
-check_out = search[1].date_input(
-    "Check-out", value=date.today() + timedelta(days=3), format="DD/MM/YYYY"
+check_in = search[0].date_input(
+    "Check-in", key="search_in", format="DD/MM/YYYY", on_change=follow_check_in
 )
+check_out = search[1].date_input("Check-out", key="search_out", format="DD/MM/YYYY")
 minimum_sleeps = search[2].number_input("Sleeps at least", min_value=0, value=0, step=1)
 tags = sorted({unit.group_tag for unit in units if unit.group_tag})
 chosen_tags = search[3].multiselect("Group", tags) if tags else []
@@ -108,8 +120,7 @@ else:
 
     for unit, quote in offerable:
         row = st.columns([4, 2, 2, 2, 2])
-        row[0].markdown(f"**{unit.name}**  \n<small>{owners[unit.owner_id].name}</small>",
-                        unsafe_allow_html=True)
+        row[0].markdown(f"**{unit.name}**")
         row[1].write(f"{unit.sleeps} ({unit.beds} bed)")
         row[2].write(unit.group_tag or "-")
         row[3].markdown(f"**{money(quote.total)}**  \n<small>{money(quote.total / quote.nights)}"

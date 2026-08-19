@@ -289,7 +289,9 @@ def test_a_reachable_but_empty_database_names_the_command_that_fixes_it(monkeypa
 
 def test_search_offers_the_free_flat_and_holds_back_the_booked_one(stubbed_database):
     """Seaview 3 is booked across today; Harbour View 6 is not."""
-    app = AppTest.from_file("pages/2_Search.py", default_timeout=30).run()
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30)
+    app.run()
+    app.date_input[1].set_value(TODAY + timedelta(days=3)).run()  # a three-night stay
 
     assert any("1 flat(s) available" in element.value for element in app.subheader)
     offered = "".join(element.value for element in app.markdown)
@@ -312,6 +314,32 @@ def test_search_will_not_offer_a_stay_below_the_minimum(stubbed_database, monkey
 
     assert any("0 flat(s) available" in element.value for element in app.subheader)
     assert any("too short" in element.label for element in app.expander)
+
+
+def test_choosing_a_check_in_moves_the_check_out_to_the_night_after(stubbed_database):
+    """So the two dates are never left in an impossible order."""
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30)
+    app.run()
+    app.date_input[1].set_value(TODAY + timedelta(days=10)).run()
+    assert app.date_input[1].value == TODAY + timedelta(days=10)
+
+    moved_to = TODAY + timedelta(days=30)
+    app.date_input[0].set_value(moved_to).run()
+
+    assert app.date_input[0].value == moved_to
+    assert app.date_input[1].value == moved_to + timedelta(days=1)
+
+
+def test_the_search_results_do_not_name_the_owner(stubbed_database):
+    """Not what you are choosing between with a guest on the phone."""
+    app = AppTest.from_file("pages/2_Search.py", default_timeout=30)
+    app.run()
+    app.date_input[1].set_value(TODAY + timedelta(days=3)).run()
+
+    shown = "".join(element.value for element in app.markdown)
+    assert "Harbour View 6" in shown
+    assert "S. Nkosi" not in shown
+    assert "Petersen" not in shown
 
 
 def test_search_says_which_flats_cannot_be_priced(stubbed_database, monkeypatch):
