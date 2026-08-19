@@ -725,3 +725,47 @@ def test_the_cleaning_page_is_calm_before_anything_is_set_up(stubbed_database, m
 
     assert not app.exception
     assert any("No cleaners on file yet" in element.value for element in app.info)
+
+
+def test_the_cleaning_grid_totals_each_day(stubbed_database, monkeypatch):
+    """The question the calendar is really asked is whether a day is coverable."""
+    monkeypatch.setattr(
+        queries, "list_cleaning_jobs",
+        lambda start=None, end=None, unit_ids=None, staff_id=None, statuses=None: [
+            CleaningJob(1, 1, TODAY, "changeover clean", 1, None, "scheduled", Decimal("450")),
+            CleaningJob(2, 2, TODAY, "post-clean", 1, None, "scheduled", Decimal("400")),
+            CleaningJob(3, 1, TODAY + timedelta(days=1), "deep clean", None, None,
+                        "scheduled", Decimal("900")),
+        ],
+    )
+
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+
+    grid = "".join(element.value for element in app.markdown)
+    assert "Cleans that day" in grid
+    assert f'title="2 clean(s) on {TODAY.strftime("%a %d %b")}"' in grid
+    assert f'title="1 clean(s) on {(TODAY + timedelta(days=1)).strftime("%a %d %b")}"' in grid
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Cleans this month"] == "3"
+    assert metrics["Cleans on that day"] == "2"
+    assert metrics["Busiest day"] == TODAY.strftime("%a %d %b")
+
+
+def test_the_totals_follow_the_cleaner_being_shown(stubbed_database, monkeypatch):
+    """Filtering to one person answers 'what is on my plate', not the whole team's."""
+    monkeypatch.setattr(
+        queries, "list_cleaning_jobs",
+        lambda start=None, end=None, unit_ids=None, staff_id=None, statuses=None: [
+            CleaningJob(1, 1, TODAY, "changeover clean", 1, None, "scheduled", Decimal("450")),
+            CleaningJob(2, 2, TODAY, "post-clean", None, None, "scheduled", Decimal("400")),
+        ],
+    )
+
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30)
+    app.run()
+    assert {m.label: m.value for m in app.metric}["Cleans this month"] == "2"
+
+    app.selectbox[0].select("Nomsa Dlamini").run()
+
+    assert {m.label: m.value for m in app.metric}["Cleans this month"] == "1"

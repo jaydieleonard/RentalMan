@@ -94,7 +94,32 @@ with calendar_tab:
             f"{len(unassigned)} job(s) this month have nobody assigned yet - "
             "they show grey with a question mark."
         )
-    st.caption("Hover a cell to see the clean, who has it, and whether it is done.")
+
+    # The bottom row of the grid counts each day; this says what the month adds
+    # up to and which day is worst, which is the question behind the question -
+    # whether the cleaners can actually get through it.
+    per_day: dict[date, int] = {}
+    for job in jobs:
+        per_day[job.date] = per_day.get(job.date, 0) + 1
+
+    summary = st.columns(3)
+    summary[0].metric("Cleans this month", len(jobs))
+    if per_day:
+        heaviest_day = max(per_day, key=lambda day: per_day[day])
+        summary[1].metric("Busiest day", heaviest_day.strftime("%a %d %b"))
+        summary[2].metric("Cleans on that day", per_day[heaviest_day])
+        working_days = len(per_day)
+        st.caption(
+            f"Spread over {working_days} day(s) - an average of "
+            f"{len(jobs) / working_days:.1f} a day on the days anything happens. "
+            "The bottom row of the grid is the total for each day; hover a cell "
+            "to see the clean, who has it, and whether it is done."
+        )
+    else:
+        st.caption(
+            "Nothing scheduled this month. Work the cleans out from the bookings "
+            "on the Jobs tab."
+        )
 
 # --- Generating and adjusting jobs ---------------------------------------
 

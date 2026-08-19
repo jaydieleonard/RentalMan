@@ -213,6 +213,17 @@ def render_year_ribbon(definitions: Sequence, year: int) -> str:
     )
 
 
+CLEANING_CSS = """
+<style>
+.rm-grid tfoot td { position: sticky; bottom: 0; z-index: 3; background: #fafafa;
+                    border-top: 2px solid #d9d9d9; }
+.rm-grid tfoot td.rm-total { font-size: 11px; font-weight: 700; color: #7f1d1d;
+                             text-align: center; }
+.rm-grid tfoot td.rm-total-head { left: 0; z-index: 5; font-size: 11px; color: #444;
+                                  font-weight: 600; }
+</style>
+"""
+
 SERVICE_COLOURS = {
     "changeover clean": "#1976d2",
     "post-clean": "#00897b",
@@ -286,6 +297,26 @@ def render_cleaning_grid(
             )
         rows.append("<tr>" + "".join(cells) + "</tr>")
 
+    # How much cleaning each day carries, across every flat shown. This is the
+    # question the calendar is really asked - not "is this flat clean" but
+    # "can the cleaners get through Saturday" - so it gets its own row rather
+    # than leaving somebody to count coloured squares down a column.
+    totals = [
+        sum(len(jobs_by_unit.get(unit.id, {}).get(day, [])) for unit in units)
+        for day in days
+    ]
+    busiest = max(totals) if totals else 0
+    footer = ['<td class="rm-unit rm-total-head">Cleans that day</td>']
+    for day, count in zip(days, totals):
+        # Shaded by how heavy the day is, so a pile-up is visible at a glance
+        # rather than needing to be read number by number.
+        weight = 0 if not busiest else count / busiest
+        background = "#ffffff" if not count else f"rgba(198, 40, 40, {0.10 + 0.55 * weight:.2f})"
+        footer.append(
+            f'<td class="rm-cell rm-total" style="background:{background}" '
+            f'title="{count} clean(s) on {day.strftime("%a %d %b")}">{count or ""}</td>'
+        )
+
     swatches = "".join(
         f'<div><span class="rm-swatch" style="background:{colour}"></span>{label}</div>'
         for label, colour in SERVICE_COLOURS.items()
@@ -293,10 +324,13 @@ def render_cleaning_grid(
 
     return (
         GRID_CSS
+        + CLEANING_CSS
         + f'<div class="rm-legend">{swatches}</div>'
         + '<div class="rm-grid-wrap"><table class="rm-grid"><thead><tr>'
         + "".join(header)
         + "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table></div>"
+        + "</tbody><tfoot><tr>"
+        + "".join(footer)
+        + "</tr></tfoot></table></div>"
     )
