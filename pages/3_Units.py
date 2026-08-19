@@ -20,6 +20,16 @@ from ui.format import money
 
 page.start("Units")
 
+#: Buffers written out in words. The database stores a number of nights; nobody
+#: setting one up should have to know that 0 means "same day".
+BUFFER_WORDING = {
+    0: "Same day - out in the morning, cleaned, in that afternoon",
+    1: "1 night free in between",
+    2: "2 nights free in between",
+    3: "3 nights free in between",
+}
+SAME_AS_ALL_YEAR = "Same as the rest of the year"
+
 owners = queries.list_owners()
 owners_by_id = {owner.id: owner for owner in owners}
 units = queries.list_units(include_inactive=True)
@@ -165,6 +175,13 @@ with rates_tab:
         }
 
         with st.form("client_rates"):
+            # The two figures per row look alike, so they are headed rather
+            # than explained underneath.
+            headings = st.columns([1, 2, 2])
+            headings[0].markdown("**Season**")
+            headings[1].markdown("**Nightly rate**")
+            headings[2].markdown("**Minimum nights**")
+
             entered = {}
             for label in SEASON_LABELS:
                 current = existing.get(label)
@@ -174,17 +191,18 @@ with rates_tab:
                     columns[1].number_input(
                         f"{label} nightly rate", min_value=0.0, step=50.0,
                         value=float(current.nightly_rate) if current else 0.0,
-                        label_visibility="collapsed", key=f"rate_{label}",
+                        label_visibility="collapsed", key=f"rate_{unit.id}_{int(year)}_{label}",
                     ),
                     columns[2].number_input(
                         f"{label} minimum nights", min_value=0, step=1,
                         value=current.min_nights if current and current.min_nights else 0,
-                        label_visibility="collapsed", key=f"min_{label}",
+                        label_visibility="collapsed", key=f"min_{unit.id}_{int(year)}_{label}",
                         help="0 means this season asks for nothing beyond the flat's own minimum.",
                     ),
                 )
             st.caption(
-                "Left: nightly rate. Right: this season's own minimum nights. On a stay "
+                "Minimum nights is this season's own rule, on top of the flat's general "
+                "minimum - leave it at 0 if the season asks for nothing extra. On a stay "
                 "crossing seasons, the minimum of the highest-rated season touched applies."
             )
             if st.form_submit_button("Save rates", type="primary"):
@@ -204,9 +222,10 @@ with rates_tab:
 with turnover_tab:
     st.caption(
         "How long a flat needs between one guest leaving and the next arriving. "
-        "Same-day turnover - out in the morning, cleaned at midday, in that afternoon - "
-        "is the normal arrangement, so 0 is the default. Set 1 or more only for a flat "
-        "that genuinely cannot be turned around inside that window."
+        "Same-day turnover is the normal arrangement and the default. Ask for a night "
+        "in between only where a flat genuinely cannot be turned around between "
+        "checkout and check-in. Whatever is set here decides both where the flat can "
+        "be booked and when it gets cleaned."
     )
     if not units:
         page.no_data("flats", "Flats tab")
@@ -216,26 +235,48 @@ with turnover_tab:
         rules = {rule.season_label: rule.buffer_nights for rule in queries.list_turnover_rules(unit.id)}
 
         with st.form("turnover_rules"):
-            default_buffer = st.number_input(
-                "Buffer nights - all seasons", min_value=0, max_value=7, step=1,
-                value=rules.get(None, 0),
-                help="0 = same-day turnover allowed.",
+            default_buffer = st.selectbox(
+                "Between one guest leaving and the next arriving",
+                options=list(BUFFER_WORDING),
+                format_func=lambda nights: BUFFER_WORDING[nights],
+                index=list(BUFFER_WORDING).index(rules.get(None, 0))
+                if rules.get(None, 0) in BUFFER_WORDING
+                else 0,
+                key=f"turnover_{unit.id}_all",
             )
-            st.markdown("**Season overrides** (leave matching the default to keep it simple)")
+
+            st.markdown("**Different in a particular season?**")
+            st.caption(
+                "Most flats work the same way all year, so leave these alone unless one "
+                "genuinely needs longer at a busier time - a bigger flat in high season, "
+                "when the cleaners are stretched across everything at once."
+            )
             columns = st.columns(3)
-            season_values = {
-                label: columns[index].number_input(
-                    f"{label} season", min_value=-1, max_value=7, step=1,
-                    value=rules.get(label, -1),
-                    help="-1 means no override: this season uses the all-seasons buffer.",
+            season_choices = {}
+            # The "no override" choice is its own string rather than None:
+            # Streamlit already uses None for "nothing selected", so a None
+            # option cannot be told apart from an empty box.
+            options = [SAME_AS_ALL_YEAR, *BUFFER_WORDING]
+            for index, label in enumerate(SEASON_LABELS):
+                current = rules.get(label)
+                season_choices[label] = columns[index].selectbox(
+                    f"{label} season",
+                    options=options,
+                    format_func=lambda choice: choice if isinstance(choice, str)
+                    else BUFFER_WORDING[choice],
+                    index=options.index(current) if current in BUFFER_WORDING else 0,
+                    key=f"turnover_{unit.id}_{label}",
                 )
-                for index, label in enumerate(SEASON_LABELS)
-            }
+
             if st.form_submit_button("Save turnover rules", type="primary"):
                 queries.save_turnover_rule(unit.id, None, int(default_buffer))
-                for label, value in season_values.items():
-                    if value >= 0:
-                        queries.save_turnover_rule(unit.id, label, int(value))
+                for label, chosen in season_choices.items():
+                    if chosen == SAME_AS_ALL_YEAR:
+                        # Back to the all-seasons setting: the override row has
+                        # to go, or it would quietly keep applying.
+                        queries.delete_turnover_rule(unit.id, label)
+                    else:
+                        queries.save_turnover_rule(unit.id, label, int(chosen))
                 st.success(f"Turnover rules saved for {unit.name}.")
                 st.rerun()
 

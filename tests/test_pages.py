@@ -570,3 +570,78 @@ def test_the_quote_pdf_is_on_letterhead():
     assert b"/Image" in pdf
     # ...and it is the print-sized copy, not the full-resolution one.
     assert len(pdf) < 200_000
+
+
+def test_the_rate_columns_are_headed(stubbed_database):
+    """Two similar-looking numbers per row needed saying which is which."""
+    app = AppTest.from_file("pages/3_Units.py", default_timeout=30).run()
+
+    headings = "".join(element.value for element in app.markdown)
+    assert "**Nightly rate**" in headings or "Nightly rate" in headings
+    assert "Minimum nights" in headings
+
+
+def test_turnover_is_offered_in_words_not_sentinel_numbers(stubbed_database):
+    """-1 meaning 'no override' was shorthand leaking out of the database."""
+    app = AppTest.from_file("pages/3_Units.py", default_timeout=30).run()
+
+    # AppTest reports the options as the user sees them, already formatted.
+    labels = [option for box in app.selectbox for option in box.options]
+
+    assert any("Same day" in label for label in labels)
+    assert any("Same as the rest of the year" in label for label in labels)
+    assert "-1" not in "".join(labels)
+
+
+def test_clearing_a_season_override_removes_it(stubbed_database, monkeypatch):
+    """Otherwise the override would quietly keep applying after being cleared."""
+    monkeypatch.setattr(
+        queries, "list_turnover_rules", lambda unit_id=None: [TurnoverRule(1, "High", 1)]
+    )
+    removed, saved = [], []
+    monkeypatch.setattr(
+        queries, "delete_turnover_rule",
+        lambda unit_id, season_label: removed.append((unit_id, season_label)),
+    )
+    monkeypatch.setattr(
+        queries, "save_turnover_rule",
+        lambda unit_id, season_label, buffer_nights: saved.append((season_label, buffer_nights)),
+    )
+
+    app = AppTest.from_file("pages/3_Units.py", default_timeout=30).run()
+    high = next(box for box in app.selectbox if box.label == "High season")
+    assert high.value == 1, "the override on file should be showing"
+
+    # No run() in between: a form's fields are read when it is submitted, so
+    # a change followed by its own rerun would simply be discarded.
+    high.set_value("Same as the rest of the year")
+    button_labelled(app, "Save turnover rules").click().run()
+
+    assert (1, "High") in removed
+    assert ("Low", None) not in saved
+
+
+def test_switching_flat_shows_that_flats_rates(stubbed_database, monkeypatch):
+    """A keyed widget keeps its value across reruns and ignores the new default,
+    so a key shared by every flat would leave the previous flat's rates on
+    screen - and save them against the wrong flat."""
+    def rates_for(unit_id=None, year=None):
+        amounts = {1: Decimal("2400.00"), 2: Decimal("5900.00")}
+        if unit_id is None:
+            return RATES
+        return [
+            ClientRate(unit_id, definition.label, YEAR, amounts[unit_id], None)
+            for definition in SEASONS
+        ]
+
+    monkeypatch.setattr(queries, "list_client_rates", rates_for)
+
+    app = AppTest.from_file("pages/3_Units.py", default_timeout=30).run()
+    shown = {box.value for box in app.number_input if box.key and box.key.startswith("rate_")}
+    assert 2400.0 in shown, shown
+
+    app.selectbox(key="rate_unit").select("Harbour View 6").run()
+
+    shown = {box.value for box in app.number_input if box.key and box.key.startswith("rate_")}
+    assert 5900.0 in shown, shown
+    assert 2400.0 not in shown, "the previous flat's rates must not follow it across"

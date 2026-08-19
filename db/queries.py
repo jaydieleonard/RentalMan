@@ -597,3 +597,11 @@ def get_clients(client_ids: Iterable[int]) -> dict[int, Client]:
         row["id"]: Client(row["id"], row["name"], row["phone"], row["email"], row["notes"])
         for row in rows
     }
+
+
+def delete_turnover_rule(unit_id: int, season_label: str) -> None:
+    """Remove a season's override so the unit's all-seasons buffer applies again."""
+    execute(
+        "DELETE FROM turnover_rules WHERE unit_id = %s AND season_label = %s",
+        (unit_id, season_label),
+    )

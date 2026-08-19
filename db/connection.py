@@ -29,6 +29,21 @@ from typing import Any, Iterator, Sequence
 import psycopg
 from psycopg.rows import dict_row
 
+#: Seconds to wait for the socket before giving up. Without this libpq waits
+#: on the operating system's own timeout, which on a network that silently
+#: drops the packets means the page hangs rather than failing - and a page that
+#: hangs tells nobody anything.
+CONNECT_TIMEOUT = 5
+
+UNREACHABLE_HELP = """Could not reach the database: {error}
+
+The connection string looks fine, so this is usually the network rather than
+the app. Postgres uses port 5432, which some office and guest networks block
+outright - the deployed app is unaffected, because it connects from its own
+host rather than from this machine. Worth trying from another network before
+looking any further.
+"""
+
 SETUP_HELP = """No database connection string found.
 
 For the app: copy .streamlit/secrets.toml.example to .streamlit/secrets.toml and
@@ -89,7 +104,9 @@ def connect() -> Iterator[psycopg.Connection]:
     each schema file inside one. Ordinary queries go through the shared
     connection below instead.
     """
-    with psycopg.connect(database_url(), row_factory=dict_row) as connection:
+    with psycopg.connect(
+        database_url(), row_factory=dict_row, connect_timeout=CONNECT_TIMEOUT
+    ) as connection:
         yield connection
 
 
@@ -110,7 +127,12 @@ def _shared_connection() -> psycopg.Connection:
         # autocommit: every statement stands alone, so a failed one cannot
         # leave the shared connection sitting in an aborted transaction that
         # breaks the next caller's query.
-        _shared = psycopg.connect(database_url(), row_factory=dict_row, autocommit=True)
+        _shared = psycopg.connect(
+            database_url(),
+            row_factory=dict_row,
+            autocommit=True,
+            connect_timeout=CONNECT_TIMEOUT,
+        )
     return _shared
 
 
@@ -127,8 +149,14 @@ def _discard_shared() -> None:
 def _run(sql: str, params: Sequence[Any] | dict[str, Any], fetch: str) -> Any:
     with _shared_lock:
         for attempt in (1, 2):
+            # Deliberately outside the try: failing to *open* a connection is
+            # not worth a second go - the network is down or the database is
+            # unreachable, and trying again only doubles the wait before
+            # anybody is told. The retry below is for a connection that was
+            # working and has since been dropped, which is a different thing.
+            connection = _shared_connection()
             try:
-                with _shared_connection().cursor() as cursor:
+                with connection.cursor() as cursor:
                     cursor.execute(sql, params)
                     if fetch == "all":
                         return cursor.fetchall()
@@ -202,7 +230,7 @@ def check_connection() -> tuple[bool, str]:
     except MissingDatabaseURL as missing:
         return False, str(missing)
     except Exception as error:
-        return False, f"Could not reach the database: {error}"
+        return False, UNREACHABLE_HELP.format(error=str(error).strip())
 
     if row is None:
         return False, "The database answered, but not in a way we understand."
