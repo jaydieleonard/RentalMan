@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
 from db.connection import execute, fetch_all, fetch_one, transaction
+from lib.payments import OwnerPayment
 from lib.models import (
     Booking,
     CleaningJob,
@@ -1081,3 +1082,124 @@ def merge_clients(from_id: int, into_id: int) -> int:
 def delete_client(client_id: int) -> None:
     """Remove a client. Their bookings keep the dates but lose the name."""
     execute("DELETE FROM clients WHERE id = %s", (client_id,))
+
+
+# --- Owner payments -------------------------------------------------------
+
+def _payment(row: dict[str, Any]) -> OwnerPayment:
+    return OwnerPayment(
+        row["id"], row["statement_id"], row["paid_on"], row["amount"],
+        row["reference"], row["notes"],
+    )
+
+
+def list_payments(statement_id: int) -> list[OwnerPayment]:
+    rows = fetch_all(
+        "SELECT * FROM owner_payments WHERE statement_id = %s ORDER BY paid_on, id",
+        (statement_id,),
+    )
+    return [_payment(row) for row in rows]
+
+
+def _resettle(cursor, statement_id: int) -> None:
+    """Bring a statement's flag back in line with what has been paid.
+
+    The payments are the record; the flag is a convenience for the list view.
+    Recomputed in the same transaction as every change to them, so the two
+    cannot drift apart.
+    """
+    cursor.execute(
+        """SELECT s.net_due,
+                  COALESCE((SELECT sum(amount) FROM owner_payments p
+                             WHERE p.statement_id = s.id), 0) AS paid,
+                  (SELECT max(paid_on) FROM owner_payments p
+                    WHERE p.statement_id = s.id) AS last_paid,
+                  s.status
+             FROM owner_statements s WHERE s.id = %s""",
+        (statement_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return
+    settled = abs(row["net_due"] - row["paid"]) <= Decimal("0.01")
+    if settled and row["paid"] != 0:
+        cursor.execute(
+            "UPDATE owner_statements SET status = 'paid', paid_on = %s WHERE id = %s",
+            (row["last_paid"], statement_id),
+        )
+    elif row["status"] == "paid":
+        # A payment was removed or corrected downwards - it is not settled now.
+        cursor.execute(
+            "UPDATE owner_statements SET status = 'sent', paid_on = NULL WHERE id = %s",
+            (statement_id,),
+        )
+
+
+def record_payment(
+    statement_id: int,
+    paid_on: date,
+    amount: Decimal,
+    reference: str = "",
+    notes: str = "",
+) -> int:
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO owner_payments (statement_id, paid_on, amount, reference, notes)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (statement_id, paid_on, amount, reference, notes),
+        )
+        payment_id = cursor.fetchone()["id"]
+        _resettle(cursor, statement_id)
+    return payment_id
+
+
+def delete_payment(payment_id: int) -> None:
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM owner_payments WHERE id = %s RETURNING statement_id", (payment_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            _resettle(cursor, row["statement_id"])
+
+
+def payment_history(year: int | None = None, owner_id: int | None = None) -> list[dict[str, Any]]:
+    """Every payment made, with the owner and month it settles.
+
+    One query rather than a payment list per statement: the question this
+    answers is "what have we paid this owner, and when", which is about the
+    run of them rather than any single month.
+    """
+    clauses, params = [], []
+    if year is not None:
+        clauses.append("EXTRACT(YEAR FROM p.paid_on) = %s")
+        params.append(year)
+    if owner_id is not None:
+        clauses.append("s.owner_id = %s")
+        params.append(owner_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return fetch_all(
+        f"""SELECT p.*, s.owner_id, s.year AS statement_year, s.month AS statement_month,
+                   s.net_due, o.name AS owner_name
+              FROM owner_payments p
+              JOIN owner_statements s ON s.id = p.statement_id
+              JOIN owners o ON o.id = s.owner_id
+              {where}
+             ORDER BY p.paid_on DESC, p.id DESC""",
+        tuple(params),
+    )
+
+
+def unsettled_statements() -> list[dict[str, Any]]:
+    """Statements with money still outstanding, oldest first."""
+    return fetch_all(
+        """SELECT s.*, o.name AS owner_name,
+                  COALESCE((SELECT sum(amount) FROM owner_payments p
+                             WHERE p.statement_id = s.id), 0) AS paid
+             FROM owner_statements s
+             JOIN owners o ON o.id = s.owner_id
+            WHERE s.status <> 'draft'
+              AND abs(s.net_due - COALESCE((SELECT sum(amount) FROM owner_payments p
+                                             WHERE p.statement_id = s.id), 0)) > 0.01
+            ORDER BY s.year, s.month, o.name"""
+    )

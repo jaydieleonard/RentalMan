@@ -19,6 +19,7 @@ import streamlit as st
 
 from db import queries
 from lib.models import DRAFT, PAID, SENT
+from lib.payments import settle
 from lib.statements import build_statement, month_bounds
 from ui import page
 from ui.format import money
@@ -213,8 +214,8 @@ with st.expander("The cleans billed on this statement"):
 
 # --- Sending it, and recording that it was paid --------------------------
 
-st.markdown("**Send it, and mark it off when the money has gone across**")
-actions = st.columns([2, 2, 2, 3])
+st.markdown("**Send it, and record the money when it goes across**")
+actions = st.columns([2, 2, 4])
 
 actions[0].download_button(
     "Download PDF",
@@ -230,23 +231,66 @@ if row["status"] == DRAFT and actions[1].button("Mark as sent"):
     queries.set_statement_status(row["id"], SENT)
     st.rerun()
 
-if row["status"] != PAID:
-    with actions[2].popover("Mark as paid"):
-        paid_on = st.date_input("Paid on", value=date.today(), format="DD/MM/YYYY")
+# --- What has actually been paid -----------------------------------------
+
+payments = queries.list_payments(row["id"])
+settlement = settle(row["net_due"], payments)
+
+balance = st.columns(3)
+balance[0].metric("Due", money(settlement.due))
+balance[1].metric("Paid so far", money(settlement.paid))
+balance[2].metric("Outstanding", money(settlement.outstanding))
+st.caption(settlement.describe())
+
+if payments:
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Paid on": payment.paid_on, "Amount": money(payment.amount),
+                 "Reference": payment.reference, "Note": payment.notes}
+                for payment in payments
+            ]
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+    with st.expander("Remove a payment"):
         st.caption(
-            "Recording only. The transfer itself happens at the bank - nothing "
-            "here moves money."
+            "For one entered by mistake. A transfer that was made and then "
+            "reversed is better recorded as a second, negative payment, so the "
+            "history still shows what happened."
         )
-        if st.button("Confirm payment", key=f"paid_{row['id']}"):
-            queries.set_statement_status(row["id"], PAID, paid_on)
+        removable = {
+            f"{p.paid_on} - {money(p.amount)}" + (f" ({p.reference})" if p.reference else ""): p
+            for p in payments
+        }
+        picked = st.selectbox("Payment", list(removable), key=f"remove_payment_{row['id']}")
+        if st.button("Remove it", key=f"remove_btn_{row['id']}"):
+            queries.delete_payment(removable[picked].id)
             st.rerun()
+
+if not settlement.is_settled:
+    with st.form(f"record_payment_{row['id']}", clear_on_submit=True):
+        st.markdown("**Record a payment**")
+        entry = st.columns([2, 2, 2, 3])
+        paid_on = entry[0].date_input("Paid on", value=date.today(), format="DD/MM/YYYY")
+        amount = entry[1].number_input(
+            "Amount", min_value=0.0, step=100.0, value=float(max(settlement.outstanding, 0)),
+            help="Defaults to what is outstanding. Change it for a part payment.",
+        )
+        reference = entry[2].text_input("Bank reference", placeholder="e.g. EFT 4471")
+        note = entry[3].text_input("Note", placeholder="optional")
+        if st.form_submit_button("Record it", type="primary"):
+            if amount <= 0:
+                st.error("Enter the amount that was paid.")
+            else:
+                queries.record_payment(
+                    row["id"], paid_on, Decimal(str(amount)), reference.strip(), note.strip()
+                )
+                st.rerun()
+    st.caption(
+        "Recording only - the transfer itself happens at the bank. Banking details "
+        "for this owner are on their record, under Units -> Owners."
+    )
 else:
-    actions[2].success(f"Paid {row['paid_on']}")
-
-if row["status"] != DRAFT and actions[3].button("Put back to draft"):
-    queries.set_statement_status(row["id"], DRAFT, None)
-    st.rerun()
-
-st.caption(
-    "Banking details for paying this owner are on their record, under Units -> Owners."
-)
+    st.success("Settled in full. Every payment against it is listed above.")

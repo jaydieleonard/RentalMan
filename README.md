@@ -23,6 +23,9 @@ numbers referenced in the code point there.
   to, and merge two records that turned out to be the same person
 - Reports: occupancy and revenue by flat, by season, by owner and month by
   month, over any period
+- Owner payments: each transfer recorded against its statement with its bank
+  reference, part payments included, and the history read across owners and
+  months
 - Owner accounting: owner rates per flat and season, monthly statements pulling
   together rental income, the management fee and the cleans actually done, as a
   PDF, with paid/not-paid tracked against each one
@@ -77,6 +80,7 @@ lib/              Business logic — no database, no Streamlit, fully tested
   statements.py     What each owner is owed for a month
   clients.py        What a guest's history adds up to
   reporting.py      Occupancy and revenue over a period
+  payments.py       What has been paid against a statement
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
 ui/               Streamlit-side helpers: the grid, PDFs, formatting, login
@@ -141,6 +145,9 @@ needs it: it connects from its own host, not from a laptop behind a firewall.
   other.
 - Only cleans marked **done** are billed to an owner. A job still showing as
   scheduled has not been carried out.
+- Payments are the record; the statement's paid flag follows them, recomputed in
+  the same transaction as every change, so the two cannot drift apart. Removing
+  a payment un-settles the statement rather than leaving it looking paid.
 - A saved quote keeps its own priced lines. Reopening one shows what the guest
   was told, not what today's rate file would charge.
 - The follow-up flag is derived on read, never stored — so it is always true

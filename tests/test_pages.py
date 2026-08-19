@@ -14,6 +14,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from db import connection, queries
+from lib.payments import OwnerPayment
 from lib.models import (
     CLEAN_TYPES,
     CONFIRMED,
@@ -46,6 +47,7 @@ PAGES = [
     "pages/8_Statements.py",
     "pages/9_Clients.py",
     "pages/10_Reports.py",
+    "pages/11_Payments.py",
 ]
 
 TODAY = date.today()
@@ -88,6 +90,7 @@ STATEMENTS = [
         "lines": [],
     }
 ]
+PAYMENTS = [OwnerPayment(1, 1, TODAY - timedelta(days=3), Decimal("5000.00"), "EFT 4471")]
 CLEANERS = [CleaningStaff(1, "Nomsa Dlamini", "082 555 0777")]
 SERVICES = [
     CleaningServiceType(None, label, Decimal("450.00"), 120) for label in CLEAN_TYPES
@@ -125,6 +128,26 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "find_statement", lambda owner_id, year, month: None)
     monkeypatch.setattr(queries, "save_statement", lambda statement, lines: 1)
     monkeypatch.setattr(queries, "set_statement_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(queries, "list_payments", lambda statement_id: PAYMENTS)
+    monkeypatch.setattr(queries, "record_payment", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(queries, "delete_payment", lambda payment_id: None)
+    monkeypatch.setattr(
+        queries, "payment_history",
+        lambda year=None, owner_id=None: [
+            {**{f: getattr(p, f) for f in ("id", "statement_id", "paid_on", "amount",
+                                           "reference", "notes")},
+             "owner_id": 1, "owner_name": "A. Petersen", "statement_year": LAST_MONTH.year,
+             "statement_month": LAST_MONTH.month, "net_due": Decimal("10850.00")}
+            for p in PAYMENTS
+        ],
+    )
+    monkeypatch.setattr(
+        queries, "unsettled_statements",
+        lambda: [{"id": 1, "owner_id": 1, "owner_name": "A. Petersen",
+                  "year": LAST_MONTH.year, "month": LAST_MONTH.month,
+                  "net_due": Decimal("10850.00"), "paid": Decimal("5000.00"),
+                  "status": "sent"}],
+    )
     monkeypatch.setattr(queries, "list_clients", lambda: CLIENTS)
     monkeypatch.setattr(
         queries, "list_bookings",
@@ -198,7 +221,8 @@ def test_page_runs_with_an_empty_database(path, stubbed_database, monkeypatch):
                  "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks",
                  "list_quotes", "list_cleaning_staff", "list_cleaning_jobs",
                  "list_unit_cleaning_rates", "list_owner_rates", "list_statements",
-                 "list_clients_with_stays", "bookings_for_client", "quotes_for_client"):
+                 "list_clients_with_stays", "bookings_for_client", "quotes_for_client",
+                 "list_payments", "payment_history", "unsettled_statements"):
         monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
     monkeypatch.setattr(queries, "list_season_years", lambda: [])
 
@@ -857,17 +881,34 @@ def test_working_out_a_month_writes_one_statement_per_owner(stubbed_database, mo
     assert any("statement(s) worked out" in element.value for element in app.success)
 
 
-def test_marking_a_statement_paid_records_the_date(stubbed_database, monkeypatch):
+def test_recording_a_payment_stores_the_amount_and_reference(stubbed_database, monkeypatch):
+    """A part payment is the thing the old single flag could never hold."""
     recorded = []
     monkeypatch.setattr(
-        queries, "set_statement_status",
-        lambda statement_id, status, paid_on=None: recorded.append((statement_id, status, paid_on)),
+        queries, "record_payment",
+        lambda statement_id, paid_on, amount, reference="", notes="":
+            recorded.append((statement_id, paid_on, amount, reference)) or 1,
     )
 
     app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
-    button_labelled(app, "Confirm payment").click().run()
+    button_labelled(app, "Record it").click().run()
 
-    assert recorded == [(1, "paid", TODAY)]
+    assert len(recorded) == 1
+    statement_id, paid_on, amount, reference = recorded[0]
+    assert statement_id == 1
+    assert paid_on == TODAY
+    # 10 850 due, 5 000 already paid in the fixture: it offers the rest.
+    assert amount == Decimal("5850.00")
+
+
+def test_the_statement_shows_what_is_still_outstanding(stubbed_database):
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Due"] == "R10 850.00"
+    assert metrics["Paid so far"] == "R5 000.00"
+    assert metrics["Outstanding"] == "R5 850.00"
+    assert any("payment(s) so far" in element.value for element in app.caption)
 
 
 def test_a_statement_whose_figures_have_moved_says_so(stubbed_database):
@@ -1033,3 +1074,31 @@ def test_a_hole_in_the_season_calendar_is_flagged_on_the_report(stubbed_database
     app.selectbox[0].select("This month").run()
 
     assert any("no season covers" in element.value for element in app.warning)
+
+
+def test_the_payments_page_totals_what_went_out_and_what_is_still_owed(stubbed_database):
+    app = AppTest.from_file("pages/11_Payments.py", default_timeout=60).run()
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Payments made"] == "1"
+    assert metrics["Still outstanding"] == "R5 850.00"
+    assert any("not settled" in element.value for element in app.warning)
+
+
+def test_the_payments_page_says_so_when_everything_is_settled(stubbed_database, monkeypatch):
+    monkeypatch.setattr(queries, "unsettled_statements", lambda: [])
+
+    app = AppTest.from_file("pages/11_Payments.py", default_timeout=60).run()
+
+    assert any("Every statement that has been sent is settled" in element.value
+               for element in app.success)
+
+
+def test_the_payments_page_is_calm_with_nothing_recorded(stubbed_database, monkeypatch):
+    monkeypatch.setattr(queries, "payment_history", lambda year=None, owner_id=None: [])
+    monkeypatch.setattr(queries, "unsettled_statements", lambda: [])
+
+    app = AppTest.from_file("pages/11_Payments.py", default_timeout=60).run()
+
+    assert not app.exception
+    assert any("No payments recorded" in element.value for element in app.info)
