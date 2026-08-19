@@ -25,6 +25,7 @@ from lib.models import BOOKING_STATUSES
 from lib.rates import PricingError, index_rates, minimum_stay_for, price_segments
 from lib.seasons import SeasonCalendarError, segment_stay
 from ui import page
+from ui.clients import client_picker
 from ui.format import date_range, money, nights
 
 page.start("Bookings")
@@ -35,11 +36,7 @@ if not units:
     st.stop()
 
 units_by_id = {unit.id: unit for unit in units}
-clients = queries.list_clients()
-clients_by_id = {client.id: client for client in clients}
 seasons = queries.list_seasons()
-
-NEW_CLIENT = "+ New client"
 
 # Widget keys carry a round number so that saving a booking can hand the next
 # one sensible defaults: Streamlit will not let a widget's own state be
@@ -71,20 +68,7 @@ with capture_tab:
         key=f"add_out_{round_key}",
     )
 
-    client_columns = st.columns([3, 2, 2])
-    client_choice = client_columns[0].selectbox(
-        "Client",
-        [NEW_CLIENT] + [client.name for client in clients],
-        key=f"add_client_{round_key}",
-    )
-    if client_choice == NEW_CLIENT:
-        new_client_name = client_columns[0].text_input("Client name", key=f"add_cname_{round_key}")
-        new_client_phone = client_columns[1].text_input("Phone", key=f"add_cphone_{round_key}")
-        new_client_email = client_columns[2].text_input("Email", key=f"add_cemail_{round_key}")
-    else:
-        chosen_client = next(c for c in clients if c.name == client_choice)
-        client_columns[1].markdown(f"**Phone**  \n{chosen_client.phone or '-'}")
-        client_columns[2].markdown(f"**Email**  \n{chosen_client.email or '-'}")
+    guest = client_picker(f"add_client_{round_key}")
 
     # --- Is it free, and what does it come to? ---------------------------
 
@@ -183,16 +167,10 @@ with capture_tab:
         if clash_stops_save:
             st.error("Those dates are not free - nothing was saved.")
             st.stop()
-        client_id = None
-        if client_choice == NEW_CLIENT:
-            if not new_client_name.strip():
-                st.error("Give the client a name, or pick one already on file.")
-                st.stop()
-            client_id = queries.create_client(
-                new_client_name.strip(), new_client_phone.strip(), new_client_email.strip()
-            )
-        else:
-            client_id = next(c.id for c in clients if c.name == client_choice)
+        if not guest.is_usable:
+            st.error("Give the guest a name, or pick one already on file.")
+            st.stop()
+        client_id = guest.commit()
 
         try:
             reference = queries.create_booking(
@@ -236,6 +214,7 @@ with find_tab:
     found = queries.list_bookings(
         window_start, window_end, unit_ids=unit_ids, statuses=status_filter or None
     )
+    clients_by_id = queries.get_clients({b.client_id for b in found})
 
     if search.strip():
         needle = search.strip().lower()
@@ -301,27 +280,22 @@ with find_tab:
             "Check-out", value=booking.check_out, format="DD/MM/YYYY", key=f"edit_out_{booking.id}"
         )
 
-        more_columns = st.columns([2, 2, 2, 4])
+        more_columns = st.columns([2, 2, 4])
         edit_status = more_columns[0].selectbox(
             "Status",
             BOOKING_STATUSES,
             index=BOOKING_STATUSES.index(booking.status),
             key=f"edit_status_{booking.id}",
         )
-        client_names = [NEW_CLIENT] + [client.name for client in clients]
-        current_client = clients_by_id.get(booking.client_id)
-        edit_client = more_columns[1].selectbox(
-            "Client",
-            client_names,
-            index=client_names.index(current_client.name) if current_client else 0,
-            key=f"edit_client_{booking.id}",
-        )
-        edit_total = more_columns[2].number_input(
+        edit_total = more_columns[1].number_input(
             "Total charged", min_value=0.0, step=100.0,
             value=float(booking.total_price or 0), key=f"edit_total_{booking.id}",
         )
-        edit_notes = more_columns[3].text_input(
+        edit_notes = more_columns[2].text_input(
             "Notes", value=booking.notes, key=f"edit_notes_{booking.id}"
+        )
+        edit_guest = client_picker(
+            f"edit_client_{booking.id}", current=clients_by_id.get(booking.client_id)
         )
 
         moved = (edit_unit.id, edit_check_in, edit_check_out) != (
@@ -361,10 +335,7 @@ with find_tab:
                     queries.update_booking(
                         booking.id,
                         unit_id=edit_unit.id,
-                        client_id=(
-                            None if edit_client == NEW_CLIENT
-                            else next(c.id for c in clients if c.name == edit_client)
-                        ),
+                        client_id=edit_guest.commit(),
                         check_in=edit_check_in,
                         check_out=edit_check_out,
                         status=edit_status,

@@ -553,3 +553,47 @@ def cancel_quote(quote_id: int, booking_id: int | None = None) -> None:
             cursor.execute(
                 "UPDATE bookings SET status = 'cancelled' WHERE id = %s", (booking_id,)
             )
+
+
+def get_client(client_id: int) -> Client | None:
+    row = fetch_one("SELECT * FROM clients WHERE id = %s", (client_id,))
+    return Client(row["id"], row["name"], row["phone"], row["email"], row["notes"]) if row else None
+
+
+def find_clients(term: str, limit: int = 8) -> list[Client]:
+    """Clients whose name, phone or email contains `term`.
+
+    Deliberately a search rather than a list: the client table only grows, and
+    a dropdown of every guest the business has ever had stops being usable long
+    before it stops loading. Names that *start* with what was typed come first,
+    since that is what someone half-way through typing a name is looking for.
+    """
+    term = term.strip()
+    if len(term) < 2:
+        return []
+    contains, prefix = f"%{term}%", f"{term.lower()}%"
+    rows = fetch_all(
+        """SELECT * FROM clients
+            WHERE name ILIKE %s OR phone ILIKE %s OR email ILIKE %s
+            ORDER BY (lower(name) LIKE %s) DESC, name
+            LIMIT %s""",
+        (contains, contains, contains, prefix, limit),
+    )
+    return [Client(r["id"], r["name"], r["phone"], r["email"], r["notes"]) for r in rows]
+
+
+def get_clients(client_ids: Iterable[int]) -> dict[int, Client]:
+    """The named clients only, keyed by id.
+
+    Used where a screen needs the names behind the rows it is showing. Loading
+    every client to look up a handful of names stops being reasonable long
+    before the list stops fitting in memory.
+    """
+    client_ids = [cid for cid in client_ids if cid is not None]
+    if not client_ids:
+        return {}
+    rows = fetch_all("SELECT * FROM clients WHERE id = ANY(%s)", (client_ids,))
+    return {
+        row["id"]: Client(row["id"], row["name"], row["phone"], row["email"], row["notes"])
+        for row in rows
+    }

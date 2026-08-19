@@ -95,6 +95,18 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "save_quote", lambda *args, **kwargs: 1)
     monkeypatch.setattr(queries, "set_quote_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(queries, "get_booking", lambda booking_id: BOOKINGS[0])
+    monkeypatch.setattr(
+        queries, "find_clients",
+        lambda term, limit=8: [c for c in CLIENTS if term.strip().lower() in c.name.lower()],
+    )
+    monkeypatch.setattr(
+        queries, "get_clients",
+        lambda ids: {c.id: c for c in CLIENTS if c.id in set(ids)},
+    )
+    monkeypatch.setattr(
+        queries, "get_client", lambda cid: next((c for c in CLIENTS if c.id == cid), None)
+    )
+    monkeypatch.setattr(queries, "create_client", lambda *args, **kwargs: 77)
     monkeypatch.setattr(queries, "accept_quote", lambda quote, notes="": 99)
     monkeypatch.setattr(queries, "cancel_quote", lambda *args, **kwargs: None)
     return monkeypatch
@@ -217,7 +229,8 @@ def test_saving_a_booking_writes_it_once_with_the_dates_entered(stubbed_database
     )
 
     app = AppTest.from_file("pages/5_Bookings.py", default_timeout=30).run()
-    app.selectbox(key="add_client_0").select("M. Abrahams").run()
+    app.text_input(key="add_client_0_name").set_value("Abrahams").run()
+    app.radio(key="add_client_0_match").set_value(1).run()  # the guest already on file
     button_labelled(app, "Save booking").click().run()
 
     assert len(recorded) == 1
@@ -235,7 +248,7 @@ def test_a_booking_that_would_land_on_another_is_not_saved(stubbed_database, mon
     )
 
     app = AppTest.from_file("pages/5_Bookings.py", default_timeout=30).run()
-    app.selectbox(key="add_client_0").select("M. Abrahams").run()
+    app.text_input(key="add_client_0_name").set_value("New Guest").run()
     button_labelled(app, "Save booking").click().run()
 
     assert any("already booked" in element.value for element in app.error)
@@ -268,7 +281,7 @@ def test_a_stay_over_a_turnover_gap_warns_but_can_still_be_captured(stubbed_data
     assert any("turnover gap" in element.value for element in app.warning)
     assert not app.error
 
-    app.selectbox(key="add_client_0").select("M. Abrahams").run()
+    app.text_input(key="add_client_0_name").set_value("New Guest").run()
     button_labelled(app, "Save booking").click().run()
 
     assert len(recorded) == 1
@@ -453,3 +466,77 @@ def test_cancelling_an_accepted_quote_also_cancels_its_booking(stubbed_database,
     button_labelled(app, "Mark cancelled").click().run()
 
     assert cancelled == [(1, 42)], "the booking it made must be cancelled too"
+
+
+def test_a_new_guest_needs_no_lookup_at_all(stubbed_database, monkeypatch):
+    """The common case: type a name nobody matches, and that is the whole step."""
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [],
+    )
+    created, booked = [], []
+    monkeypatch.setattr(
+        queries, "create_client",
+        lambda name, phone="", email="", notes="": created.append((name, phone)) or 77,
+    )
+    monkeypatch.setattr(
+        queries, "create_booking", lambda *args, **kwargs: booked.append(args) or 5
+    )
+
+    app = AppTest.from_file("pages/5_Bookings.py", default_timeout=30)
+    app.run()
+    app.text_input(key="add_client_0_name").set_value("T. Willemse").run()
+    app.text_input(key="add_client_0_phone").set_value("082 555 0999").run()
+
+    # Nobody on file matches, so there is nothing to choose between.
+    assert not [radio for radio in app.radio if radio.key == "add_client_0_match"]
+
+    button_labelled(app, "Save booking").click().run()
+
+    assert created == [("T. Willemse", "082 555 0999")]
+    assert booked and booked[0][1] == 77
+
+
+def test_a_repeat_guest_is_found_by_typing_and_is_not_duplicated(stubbed_database, monkeypatch):
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [],
+    )
+    created, booked = [], []
+    monkeypatch.setattr(
+        queries, "create_client",
+        lambda name, phone="", email="", notes="": created.append(name) or 77,
+    )
+    monkeypatch.setattr(
+        queries, "create_booking", lambda *args, **kwargs: booked.append(args) or 5
+    )
+
+    app = AppTest.from_file("pages/5_Bookings.py", default_timeout=30)
+    app.run()
+    app.text_input(key="add_client_0_name").set_value("Abrahams").run()
+
+    offered = app.radio(key="add_client_0_match")
+    assert offered.value == 0, "a new guest is the default even when one matches"
+
+    offered.set_value(1).run()
+    button_labelled(app, "Save booking").click().run()
+
+    assert created == [], "picking the guest on file must not create a second copy"
+    assert booked and booked[0][1] == 1
+
+
+def test_editing_a_booking_keeps_its_guest_without_being_asked(stubbed_database, monkeypatch):
+    """Changing dates must not quietly make a second copy of the same guest."""
+    created, updated = [], []
+    monkeypatch.setattr(
+        queries, "create_client", lambda *args, **kwargs: created.append(args) or 77
+    )
+    monkeypatch.setattr(
+        queries, "update_booking", lambda booking_id, **fields: updated.append(fields)
+    )
+
+    app = AppTest.from_file("pages/5_Bookings.py", default_timeout=30).run()
+    button_labelled(app, "Save changes").click().run()
+
+    assert created == []
+    assert updated and updated[0]["client_id"] == 1

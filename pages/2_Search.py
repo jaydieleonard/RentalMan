@@ -24,6 +24,7 @@ from lib.rates import MinimumStayError, PricingError, build_quote
 from lib.quotes import quote_message
 from lib.seasons import SeasonCalendarError
 from ui import page
+from ui.clients import client_picker
 from ui.format import CURRENCY, money, nights as night_count
 from ui.pdf import quote_pdf
 
@@ -160,9 +161,7 @@ with quote_panel:
             st.session_state.pop("saved_quote_id", None)
         else:
             unit = next(u for u in units if u.id == saved.unit_id)
-            client = next(
-                (c for c in queries.list_clients() if c.id == saved.client_id), None
-            )
+            client = queries.get_client(saved.client_id) if saved.client_id else None
             client_name = client.name if client else "there"
 
             st.success(f"Quote #{saved.id} saved for {unit.name}.")
@@ -206,28 +205,18 @@ with quote_panel:
                 f"= **{money(line.subtotal)}**"
             )
 
-        clients = queries.list_clients()
-        NEW_CLIENT = "+ New client"
-        entry = st.columns([3, 2, 2, 1])
-        choice = entry[0].selectbox("Client", [NEW_CLIENT] + [c.name for c in clients])
-        if choice == NEW_CLIENT:
-            new_name = entry[1].text_input("Client name")
-            new_phone = entry[2].text_input("Phone")
-        guests = entry[3].number_input("Guests", min_value=1, value=min(2, unit.sleeps), step=1)
-        note = st.text_input("Note on the quote (optional)")
+        guest = client_picker(f"quote_client_{unit.id}")
+        entry = st.columns([1, 4])
+        guests = entry[0].number_input("Guests", min_value=1, value=min(2, unit.sleeps), step=1)
+        note = entry[1].text_input("Note on the quote (optional)")
 
         actions = st.columns([2, 2, 4])
         if actions[0].button("Save quote", type="primary"):
-            if choice == NEW_CLIENT and not new_name.strip():
-                st.error("Give the client a name, or pick one already on file.")
+            if not guest.is_usable:
+                st.error("Give the guest a name, or pick one already on file.")
             else:
-                client_id = (
-                    queries.create_client(new_name.strip(), new_phone.strip())
-                    if choice == NEW_CLIENT
-                    else next(c.id for c in clients if c.name == choice)
-                )
                 st.session_state.saved_quote_id = queries.save_quote(
-                    unit.id, client_id, quoted_in, quoted_out, int(guests),
+                    unit.id, guest.commit(), quoted_in, quoted_out, int(guests),
                     quote.total, quote.lines, note.strip(),
                 )
                 st.rerun()
