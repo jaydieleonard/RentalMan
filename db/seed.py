@@ -1,7 +1,8 @@
 """Fill an empty database with plausible demo data.
 
-    python -m db.seed          # only if the database is empty
-    python -m db.seed --force  # add it anyway
+    python -m db.seed                # only if the database is empty
+    python -m db.seed --force        # add it anyway
+    python -m db.seed --owner-rates  # only fill in missing owner rates
 
 This is for trying the calendar out before the real flats are captured - the
 names and figures are invented. It is not part of the app.
@@ -70,6 +71,36 @@ def season_rows(year: int) -> list[tuple[str, date, date]]:
     ]
 
 
+#: What the owner gets, as a share of what the guest is charged. Only used to
+#: fill in plausible starting figures - the real rates are negotiated per flat
+#: and typed in on the Units page, and nothing in the app derives one from the
+#: other (3.7).
+OWNER_SHARE = Decimal("0.80")
+
+
+def derive_owner_rates(share: Decimal = OWNER_SHARE) -> int:
+    """Fill in an owner rate for every client rate that has none.
+
+    A starting point for flats whose owner rate has not been agreed yet, so
+    statements have something to work with. Existing owner rates are left
+    alone: one that was typed in was typed in for a reason.
+    """
+    written = 0
+    existing = {
+        (rate.unit_id, rate.season_label, rate.year) for rate in queries.list_owner_rates()
+    }
+    for rate in queries.list_client_rates():
+        key = (rate.unit_id, rate.season_label, rate.year)
+        if key in existing:
+            continue
+        queries.save_owner_rate(
+            rate.unit_id, rate.season_label, rate.year,
+            (rate.nightly_rate * share).quantize(Decimal("0.01")),
+        )
+        written += 1
+    return written
+
+
 def database_is_empty() -> bool:
     return not queries.list_owners() and not queries.list_units(include_inactive=True)
 
@@ -112,6 +143,9 @@ def seed() -> None:
     queries.save_turnover_rule(biggest, None, 0)
     queries.save_turnover_rule(biggest, "High", 1)
 
+    derived = derive_owner_rates()
+    print(f"  owner rates derived at {OWNER_SHARE:.0%} of the client rate: {derived}")
+
     client_ids = [queries.create_client(name, phone) for name, phone in CLIENTS]
 
     # A month or so of bookings around today, so the grid has something on it.
@@ -146,6 +180,12 @@ def seed() -> None:
 
 
 def main(argv: list[str]) -> int:
+    if "--owner-rates" in argv:
+        # Just the owner rates, for a database that already has its flats and
+        # client rates but no owner side yet.
+        print(f"Derived {derive_owner_rates()} owner rate(s) at {OWNER_SHARE:.0%} "
+              "of the client rate.")
+        return 0
     if not database_is_empty() and "--force" not in argv:
         print("The database already has data in it. Re-run with --force to add more anyway.")
         return 1
