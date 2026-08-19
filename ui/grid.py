@@ -211,3 +211,92 @@ def render_year_ribbon(definitions: Sequence, year: int) -> str:
         + "".join(rows)
         + "</tbody></table>"
     )
+
+
+SERVICE_COLOURS = {
+    "changeover clean": "#1976d2",
+    "post-clean": "#00897b",
+    "pre-clean": "#f9a825",
+    "light clean": "#7e57c2",
+    "deep clean": "#37474f",
+}
+UNASSIGNED = "#e0e0e0"
+
+
+def initials(name: str) -> str:
+    """Two letters at most - a grid cell has room for a mark, not a name."""
+    parts = [part for part in name.replace(".", " ").split() if part]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
+
+
+def render_cleaning_grid(
+    units: Sequence,
+    days: Sequence[date],
+    jobs_by_unit: Mapping[int, Mapping[date, Sequence]],
+    staff_names: Mapping[int, str],
+    today: date | None = None,
+) -> str:
+    """Flats down the side, days across, one mark per scheduled clean (3.9).
+
+    Flats rather than staff on the vertical, so it lines up with the booking
+    calendar and so a job nobody has been given yet still has a row to sit in -
+    which is the thing worth spotting.
+    """
+    if not units:
+        return "<p>No units match these filters.</p>"
+
+    header = ['<th class="rm-unit-head">Flat</th>']
+    for day in days:
+        weekend = "rm-weekend" if day.weekday() >= 5 else ""
+        header.append(
+            f'<th class="{weekend}" title="{day.strftime("%A %d %B %Y")}">{day.day}<br>'
+            f'<span style="font-weight:400;color:#999">{day.strftime("%a")[0]}</span></th>'
+        )
+
+    rows = []
+    for unit in units:
+        cells = [f'<td class="rm-unit">{escape(unit.name)}</td>']
+        for day in days:
+            jobs = jobs_by_unit.get(unit.id, {}).get(day, [])
+            if not jobs:
+                background, text, title = ("#f7f7f7" if day.weekday() < 5 else "#f0f0f0"), "", ""
+            else:
+                job = jobs[0]
+                background = SERVICE_COLOURS.get(job.service_label, "#9e9e9e")
+                who = staff_names.get(job.staff_id)
+                text = initials(who) if who else "?"
+                if not who:
+                    background = UNASSIGNED
+                title = "; ".join(
+                    f"{j.service_label} - {staff_names.get(j.staff_id, 'nobody assigned yet')}"
+                    f" ({j.status})"
+                    for j in jobs
+                )
+                if len(jobs) > 1:
+                    text = f"{text}+"
+            classes = "rm-cell" + (" rm-today" if today and day == today else "")
+            colour = "#ffffff" if text and background != UNASSIGNED else "#555"
+            cells.append(
+                f'<td class="{classes}" style="background:{background};color:{colour};'
+                f'font-size:10px;font-weight:600" title="{escape(title)}">{text}</td>'
+            )
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    swatches = "".join(
+        f'<div><span class="rm-swatch" style="background:{colour}"></span>{label}</div>'
+        for label, colour in SERVICE_COLOURS.items()
+    ) + f'<div><span class="rm-swatch" style="background:{UNASSIGNED}"></span>nobody assigned</div>'
+
+    return (
+        GRID_CSS
+        + f'<div class="rm-legend">{swatches}</div>'
+        + '<div class="rm-grid-wrap"><table class="rm-grid"><thead><tr>'
+        + "".join(header)
+        + "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )

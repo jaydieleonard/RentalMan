@@ -81,7 +81,7 @@ def buffer_nights_for(
     return unit_default if unit_default is not None else DEFAULT_BUFFER_NIGHTS
 
 
-def _buffer_at(
+def buffer_at(
     boundary: date,
     unit_id: int,
     rules: Iterable[TurnoverRule],
@@ -110,11 +110,11 @@ def nights_held_by(
     """
     held: dict[date, str] = {}
 
-    before = _buffer_at(booking.check_in, booking.unit_id, rules, definitions)
+    before = buffer_at(booking.check_in, booking.unit_id, rules, definitions)
     for step in range(1, before + 1):
         held[booking.check_in - step * ONE_DAY] = BUFFER
 
-    after = _buffer_at(booking.check_out, booking.unit_id, rules, definitions)
+    after = buffer_at(booking.check_out, booking.unit_id, rules, definitions)
     for step in range(after):
         held[booking.check_out + step * ONE_DAY] = BUFFER
 

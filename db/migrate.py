@@ -38,9 +38,44 @@ def applied_filenames(connection) -> set[str]:
         return {row["filename"] for row in cursor.fetchall()}
 
 
+def migrate_over_https() -> list[str]:
+    """Apply outstanding files through Neon's HTTPS endpoint.
+
+    Used when port 5432 is unreachable - some networks allow web traffic and
+    nothing else. Each file goes as one batch, which the endpoint runs as a
+    single transaction, so a file that fails leaves nothing behind exactly as
+    it would over the normal connection.
+    """
+    from db import http_sql
+
+    http_sql.run(CREATE_MIGRATIONS_TABLE)
+    already = {row["filename"] for row in http_sql.run("SELECT filename FROM schema_migrations")}
+
+    applied_now: list[str] = []
+    for path in schema_files():
+        if path.name in already:
+            continue
+        print(f"applying {path.name} over HTTPS ...", flush=True)
+        statements = http_sql.split_statements(path.read_text(encoding="utf-8"))
+        statements.append(
+            "INSERT INTO schema_migrations (filename) VALUES ('%s')" % path.name.replace("'", "''")
+        )
+        http_sql.run_batch(statements)
+        applied_now.append(path.name)
+    return applied_now
+
+
 def migrate() -> list[str]:
     """Apply every outstanding schema file. Returns the names applied."""
     applied_now: list[str] = []
+    try:
+        connection_manager = connect()
+        connection_manager.__enter__()
+    except Exception as error:
+        print(f"Port 5432 is unreachable ({type(error).__name__}); trying HTTPS instead.")
+        return migrate_over_https()
+    connection_manager.__exit__(None, None, None)
+
     with connect() as connection:
         already = applied_filenames(connection)
         connection.commit()

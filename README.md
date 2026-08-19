@@ -15,7 +15,10 @@ numbers referenced in the code point there.
 - The booking grid, and entering bookings by hand
 - Availability search: dates and party size in, free flats out, each already priced
 - Quotes: saved with their priced lines, sent as a WhatsApp-ready message or a
-  PDF, reopened and resent later, and flagged for follow-up after seven days
+  PDF, reopened and resent later, and flagged for follow-up after seven days;
+  accepting one makes the booking that holds the dates
+- Cleaning: staff, service costs, the jobs worked out from the bookings, and a
+  month-at-a-glance calendar of who is cleaning what
 
 Bookings can be entered and corrected by hand on the Bookings page, brought
 forward from Phase 3 so the flats' existing bookings can be captured now. Every
@@ -63,6 +66,7 @@ lib/              Business logic — no database, no Streamlit, fully tested
   rates.py          Quote pricing and minimum-stay rules
   availability.py   Turnover buffers and what blocks a unit
   quotes.py         The guest-facing message and the follow-up flag
+  cleaning.py       Which cleans a flat needs, and when
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
 ui/               Streamlit-side helpers: the grid, PDFs, formatting, login
@@ -84,6 +88,19 @@ No database is needed. The logic tests are pure; the page tests run each screen
 through Streamlit's `AppTest` with the queries stubbed, including the
 day-one case where nothing has been captured yet.
 
+## When port 5432 is blocked
+
+Plenty of office and guest networks allow web traffic and nothing else, which
+leaves Postgres's own port unreachable while the very same Neon host answers
+fine on 443. `python -m db.migrate` notices and applies the outstanding files
+over Neon's HTTPS endpoint instead, so a migration is never blocked by the
+network you happen to be on.
+
+The app itself always speaks the real protocol through psycopg. The HTTPS path
+returns every value as text - a count arrives as `"15"` - which is fine for DDL
+and for looking around, and exactly wrong for money. The deployed app never
+needs it: it connects from its own host, not from a laptop behind a firewall.
+
 ## Decisions worth knowing
 
 - A night belongs to the season covering the date it **starts** on, and the
@@ -100,3 +117,11 @@ day-one case where nothing has been captured yet.
   was told, not what today's rate file would charge.
 - The follow-up flag is derived on read, never stored — so it is always true
   without anything having to run overnight.
+- Cleaning jobs are planned from the same Turnover Rule the availability search
+  reads, so a flat that takes same-day guests gets a changeover clean and one
+  that needs a clear day gets a post-clean and a pre-clean — the two can never
+  disagree, which matters because the failure mode is a guest arriving at a
+  flat nobody cleaned.
+- Working out the cleans never touches a job already on the calendar. One moved
+  or reassigned by hand was moved by a person who knew something the rules did
+  not.

@@ -192,6 +192,73 @@ class QuoteLine:
     subtotal: Decimal
 
 
+# Clean types (3.10). Each is a distinct service with its own cost.
+CHANGEOVER_CLEAN = "changeover clean"
+POST_CLEAN = "post-clean"
+PRE_CLEAN = "pre-clean"
+LIGHT_CLEAN = "light clean"
+DEEP_CLEAN = "deep clean"
+CLEAN_TYPES = (CHANGEOVER_CLEAN, POST_CLEAN, PRE_CLEAN, LIGHT_CLEAN, DEEP_CLEAN)
+
+# Cleaning job statuses (6).
+SCHEDULED = "scheduled"
+DONE = "done"
+MISSED = "missed"
+JOB_STATUSES = (SCHEDULED, DONE, MISSED)
+
+
+@dataclass(frozen=True)
+class CleaningStaff:
+    """6 Cleaning Staff. No login of their own in this version."""
+
+    id: int | None
+    name: str
+    phone: str = ""
+    notes: str = ""
+    active: bool = True
+
+
+@dataclass(frozen=True)
+class CleaningServiceType:
+    """6 Cleaning Service Type - the standard cost that applies everywhere."""
+
+    id: int | None
+    label: str
+    standard_cost: Decimal
+    default_minutes: int | None = None
+
+
+@dataclass(frozen=True)
+class UnitCleaningRate:
+    """6 Unit Cleaning Rate - present only where a price was negotiated away
+    from the standard for one flat, so most flats need no row at all."""
+
+    unit_id: int
+    service_label: str
+    cost: Decimal
+
+
+@dataclass(frozen=True)
+class CleaningJob:
+    """6 Cleaning Job - one visit, on one day, by one person.
+
+    `booking_id` is blank for work not tied to a stay, such as a periodic deep
+    clean. `cost` is stamped when the job is created rather than looked up
+    later, for the same reason a quote keeps its own lines: what the owner is
+    charged should not move because a rate was edited afterwards.
+    """
+
+    id: int | None
+    unit_id: int
+    date: date
+    service_label: str
+    staff_id: int | None = None
+    booking_id: int | None = None
+    status: str = SCHEDULED
+    cost: Decimal = Decimal("0.00")
+    notes: str = ""
+
+
 # Quote statuses (6). Separate from the booking statuses above: a quote is
 # accepted or not, a booking is confirmed or not, and they are different things
 # at different moments.

@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from datetime import date, time
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 from db.connection import execute, fetch_all, fetch_one, transaction
 from lib.models import (
     Booking,
+    CleaningJob,
+    CleaningServiceType,
+    CleaningStaff,
     Client,
     ClientRate,
     Owner,
@@ -23,6 +26,7 @@ from lib.models import (
     TurnoverRule,
     Unit,
     UnitBlock,
+    UnitCleaningRate,
 )
 
 
@@ -605,3 +609,222 @@ def delete_turnover_rule(unit_id: int, season_label: str) -> None:
         "DELETE FROM turnover_rules WHERE unit_id = %s AND season_label = %s",
         (unit_id, season_label),
     )
+
+
+# --- Cleaning staff and services -----------------------------------------
+
+def list_cleaning_staff(include_inactive: bool = False) -> list[CleaningStaff]:
+    sql = "SELECT * FROM cleaning_staff"
+    if not include_inactive:
+        sql += " WHERE active"
+    rows = fetch_all(sql + " ORDER BY name")
+    return [CleaningStaff(r["id"], r["name"], r["phone"], r["notes"], r["active"]) for r in rows]
+
+
+def create_cleaning_staff(name: str, phone: str = "", notes: str = "") -> int:
+    row = execute(
+        "INSERT INTO cleaning_staff (name, phone, notes) VALUES (%s, %s, %s) RETURNING id",
+        (name, phone, notes),
+    )
+    return row["id"]
+
+
+def update_cleaning_staff(staff_id: int, **fields: Any) -> None:
+    allowed = ("name", "phone", "notes", "active")
+    names = [name for name in fields if name in allowed]
+    if not names:
+        return
+    sets = ", ".join(f"{name} = %s" for name in names)
+    execute(f"UPDATE cleaning_staff SET {sets} WHERE id = %s",
+            (*(fields[n] for n in names), staff_id))
+
+
+def list_service_types() -> list[CleaningServiceType]:
+    rows = fetch_all("SELECT * FROM cleaning_service_types ORDER BY label")
+    return [
+        CleaningServiceType(None, r["label"], r["standard_cost"], r["default_minutes"])
+        for r in rows
+    ]
+
+
+def save_service_cost(label: str, standard_cost: Decimal, default_minutes: int | None) -> None:
+    execute(
+        """UPDATE cleaning_service_types
+              SET standard_cost = %s, default_minutes = %s
+            WHERE label = %s""",
+        (standard_cost, default_minutes, label),
+    )
+
+
+def list_unit_cleaning_rates(unit_id: int | None = None) -> list[UnitCleaningRate]:
+    sql = "SELECT * FROM unit_cleaning_rates"
+    params: tuple[Any, ...] = ()
+    if unit_id is not None:
+        sql += " WHERE unit_id = %s"
+        params = (unit_id,)
+    rows = fetch_all(sql + " ORDER BY unit_id, service_label", params)
+    return [UnitCleaningRate(r["unit_id"], r["service_label"], r["cost"]) for r in rows]
+
+
+def save_unit_cleaning_rate(unit_id: int, service_label: str, cost: Decimal) -> None:
+    execute(
+        """INSERT INTO unit_cleaning_rates (unit_id, service_label, cost)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (unit_id, service_label) DO UPDATE SET cost = EXCLUDED.cost""",
+        (unit_id, service_label, cost),
+    )
+
+
+def delete_unit_cleaning_rate(unit_id: int, service_label: str) -> None:
+    execute(
+        "DELETE FROM unit_cleaning_rates WHERE unit_id = %s AND service_label = %s",
+        (unit_id, service_label),
+    )
+
+
+def get_cleaning_settings(unit_id: int) -> dict[str, int]:
+    """A flat's cleaning cadences, falling back to the business-wide defaults."""
+    row = fetch_one("SELECT * FROM unit_cleaning_settings WHERE unit_id = %s", (unit_id,))
+    if row is None:
+        return {"light_after_nights": 10, "light_every_nights": 7, "deep_every_days": 91}
+    return {
+        "light_after_nights": row["light_after_nights"],
+        "light_every_nights": row["light_every_nights"],
+        "deep_every_days": row["deep_every_days"],
+    }
+
+
+def save_cleaning_settings(
+    unit_id: int, light_after_nights: int, light_every_nights: int, deep_every_days: int
+) -> None:
+    execute(
+        """INSERT INTO unit_cleaning_settings
+               (unit_id, light_after_nights, light_every_nights, deep_every_days)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (unit_id) DO UPDATE
+               SET light_after_nights = EXCLUDED.light_after_nights,
+                   light_every_nights = EXCLUDED.light_every_nights,
+                   deep_every_days    = EXCLUDED.deep_every_days""",
+        (unit_id, light_after_nights, light_every_nights, deep_every_days),
+    )
+
+
+# --- Cleaning jobs --------------------------------------------------------
+
+def _cleaning_job(row: dict[str, Any]) -> CleaningJob:
+    return CleaningJob(
+        id=row["id"],
+        unit_id=row["unit_id"],
+        date=row["date"],
+        service_label=row["service_label"],
+        staff_id=row["staff_id"],
+        booking_id=row["booking_id"],
+        status=row["status"],
+        cost=row["cost"],
+        notes=row["notes"],
+    )
+
+
+def list_cleaning_jobs(
+    start: date | None = None,
+    end: date | None = None,
+    unit_ids: Iterable[int] | None = None,
+    staff_id: int | None = None,
+    statuses: Iterable[str] | None = None,
+) -> list[CleaningJob]:
+    clauses, params = [], []
+    if start is not None:
+        clauses.append("date >= %s")
+        params.append(start)
+    if end is not None:
+        clauses.append("date < %s")
+        params.append(end)
+    if unit_ids is not None:
+        unit_ids = list(unit_ids)
+        if not unit_ids:
+            return []
+        clauses.append("unit_id = ANY(%s)")
+        params.append(unit_ids)
+    if staff_id is not None:
+        clauses.append("staff_id = %s")
+        params.append(staff_id)
+    if statuses is not None:
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        clauses.append("status = ANY(%s)")
+        params.append(statuses)
+
+    sql = "SELECT * FROM cleaning_jobs"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    return [_cleaning_job(row) for row in fetch_all(sql + " ORDER BY date, unit_id", tuple(params))]
+
+
+def create_cleaning_job(
+    unit_id: int,
+    day: date,
+    service_label: str,
+    cost: Decimal,
+    staff_id: int | None = None,
+    booking_id: int | None = None,
+    notes: str = "",
+) -> int | None:
+    """Add one job. Returns None if that flat already has that clean that day."""
+    row = execute(
+        """INSERT INTO cleaning_jobs (unit_id, date, service_label, cost, staff_id,
+                                      booking_id, notes)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (unit_id, date, service_label) DO NOTHING
+           RETURNING id""",
+        (unit_id, day, service_label, cost, staff_id, booking_id, notes),
+    )
+    return row["id"] if row else None
+
+
+def update_cleaning_job(job_id: int, **fields: Any) -> None:
+    allowed = ("unit_id", "date", "service_label", "staff_id", "status", "cost", "notes")
+    names = [name for name in fields if name in allowed]
+    if not names:
+        return
+    sets = ", ".join(f"{name} = %s" for name in names)
+    execute(f"UPDATE cleaning_jobs SET {sets} WHERE id = %s",
+            (*(fields[n] for n in names), job_id))
+
+
+def delete_cleaning_job(job_id: int) -> None:
+    execute("DELETE FROM cleaning_jobs WHERE id = %s", (job_id,))
+
+
+def last_deep_clean(unit_id: int) -> date | None:
+    """When this flat was last deep cleaned, so the next one is counted from it."""
+    row = fetch_one(
+        """SELECT max(date) AS last FROM cleaning_jobs
+            WHERE unit_id = %s AND service_label = 'deep clean' AND status = 'done'""",
+        (unit_id,),
+    )
+    return row["last"] if row else None
+
+
+def schedule_jobs(planned: Sequence, costs: Mapping[tuple[int, str], Decimal]) -> int:
+    """Put planned jobs on the calendar, skipping any that are already there.
+
+    Existing jobs are never touched. A job moved to another day or handed to
+    somebody else was moved by a person who knew something the rules did not,
+    and re-running the rules must not undo that.
+    """
+    added = 0
+    with transaction() as connection, connection.cursor() as cursor:
+        for job in planned:
+            cursor.execute(
+                """INSERT INTO cleaning_jobs (unit_id, date, service_label, cost, booking_id, notes)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (unit_id, date, service_label) DO NOTHING
+                   RETURNING id""",
+                (job.unit_id, job.date, job.service_label,
+                 costs.get((job.unit_id, job.service_label), Decimal("0.00")),
+                 job.booking_id, job.reason),
+            )
+            if cursor.fetchone():
+                added += 1
+    return added

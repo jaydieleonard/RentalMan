@@ -15,8 +15,12 @@ from streamlit.testing.v1 import AppTest
 
 from db import connection, queries
 from lib.models import (
+    CLEAN_TYPES,
     CONFIRMED,
     QUOTE_OPEN,
+    CleaningJob,
+    CleaningServiceType,
+    CleaningStaff,
     Booking,
     Client,
     ClientRate,
@@ -37,6 +41,7 @@ PAGES = [
     "pages/4_Seasons.py",
     "pages/5_Bookings.py",
     "pages/6_Quotes.py",
+    "pages/7_Cleaning.py",
 ]
 
 TODAY = date.today()
@@ -62,6 +67,16 @@ BOOKINGS = [
             Decimal("12000.00"), "Repeat guest"),
 ]
 RULES = [TurnoverRule(2, "High", 1)]
+CLEANERS = [CleaningStaff(1, "Nomsa Dlamini", "082 555 0777")]
+SERVICES = [
+    CleaningServiceType(None, label, Decimal("450.00"), 120) for label in CLEAN_TYPES
+]
+CLEANING_JOBS = [
+    CleaningJob(1, 1, TODAY, "changeover clean", 1, None, "scheduled", Decimal("450.00"),
+                "Guest out and the next guest in the same day"),
+    CleaningJob(2, 2, TODAY + timedelta(days=2), "deep clean", None, None, "scheduled",
+                Decimal("900.00"), "Periodic deep clean"),
+]
 QUOTE_LINES = (
     QuoteLine("Medium", TODAY, TODAY + timedelta(days=2), 3,
               Decimal("2400.00"), Decimal("7200.00")),
@@ -109,6 +124,20 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "create_client", lambda *args, **kwargs: 77)
     monkeypatch.setattr(queries, "accept_quote", lambda quote, notes="": 99)
     monkeypatch.setattr(queries, "cancel_quote", lambda *args, **kwargs: None)
+    monkeypatch.setattr(queries, "list_cleaning_staff", lambda include_inactive=False: CLEANERS)
+    monkeypatch.setattr(queries, "list_service_types", lambda: SERVICES)
+    monkeypatch.setattr(
+        queries, "list_cleaning_jobs",
+        lambda start=None, end=None, unit_ids=None, staff_id=None, statuses=None: CLEANING_JOBS,
+    )
+    monkeypatch.setattr(queries, "list_unit_cleaning_rates", lambda unit_id=None: [])
+    monkeypatch.setattr(
+        queries, "get_cleaning_settings",
+        lambda unit_id: {"light_after_nights": 10, "light_every_nights": 7, "deep_every_days": 91},
+    )
+    monkeypatch.setattr(queries, "last_deep_clean", lambda unit_id: None)
+    monkeypatch.setattr(queries, "schedule_jobs", lambda planned, costs: len(planned))
+    monkeypatch.setattr(queries, "update_cleaning_job", lambda *args, **kwargs: None)
     return monkeypatch
 
 
@@ -124,7 +153,8 @@ def test_page_runs_with_an_empty_database(path, stubbed_database, monkeypatch):
     """Day one, before anything has been captured, must not be a wall of errors."""
     for name in ("list_owners", "list_units", "list_seasons", "list_client_rates",
                  "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks",
-                 "list_quotes"):
+                 "list_quotes", "list_cleaning_staff", "list_cleaning_jobs",
+                 "list_unit_cleaning_rates"):
         monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
     monkeypatch.setattr(queries, "list_season_years", lambda: [])
 
@@ -645,3 +675,53 @@ def test_switching_flat_shows_that_flats_rates(stubbed_database, monkeypatch):
     shown = {box.value for box in app.number_input if box.key and box.key.startswith("rate_")}
     assert 5900.0 in shown, shown
     assert 2400.0 not in shown, "the previous flat's rates must not follow it across"
+
+
+def test_the_cleaning_calendar_marks_who_has_each_job(stubbed_database):
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+
+    grid = "".join(element.value for element in app.markdown)
+    assert "rm-grid" in grid
+    assert "Nomsa Dlamini" in grid          # in the cell's tooltip
+    assert ">ND<" in grid                    # and as initials in the cell itself
+
+
+def test_a_job_nobody_has_been_given_is_called_out(stubbed_database):
+    """The deep clean in the fixture has no cleaner on it."""
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+
+    assert any("nobody assigned yet" in element.value for element in app.warning)
+
+
+def test_working_out_the_cleans_schedules_what_the_rules_say(stubbed_database, monkeypatch):
+    """A four-night stay ending today, on a flat that takes same-day guests."""
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [
+            Booking(1, 1, 1, TODAY - timedelta(days=4), TODAY, CONFIRMED)
+        ],
+    )
+    scheduled = []
+    monkeypatch.setattr(
+        queries, "schedule_jobs",
+        lambda planned, costs: scheduled.extend(planned) or len(planned),
+    )
+
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+    button_labelled(app, "Work out the cleans").click().run()
+
+    labels = {job.service_label for job in scheduled}
+    assert "post-clean" in labels, labels
+    assert any("deep clean" in label for label in labels)
+    # Every job says why it was scheduled, so a surprising one can be understood.
+    assert all(job.reason for job in scheduled)
+
+
+def test_the_cleaning_page_is_calm_before_anything_is_set_up(stubbed_database, monkeypatch):
+    for name in ("list_cleaning_staff", "list_cleaning_jobs", "list_unit_cleaning_rates"):
+        monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
+
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+
+    assert not app.exception
+    assert any("No cleaners on file yet" in element.value for element in app.info)
