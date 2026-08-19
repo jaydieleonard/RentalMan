@@ -508,3 +508,48 @@ def get_quote(quote_id: int) -> SavedQuote | None:
 
 def set_quote_status(quote_id: int, status: str) -> None:
     execute("UPDATE quotes SET status = %s WHERE id = %s", (status, quote_id))
+
+
+def accept_quote(quote: SavedQuote, notes: str = "") -> int:
+    """Turn an accepted quote into a confirmed booking, in one action (3.6).
+
+    Both writes happen together: a booking with no quote pointing at it, or an
+    accepted quote with no booking holding the dates, would each be a worse
+    state than the one we started in.
+
+    The caller is expected to have checked availability first - a quote does
+    not hold dates, so the flat may well have gone since it was sent. The
+    exclusion constraint on `bookings` is the backstop if the other laptop got
+    there in the meantime.
+    """
+    with transaction() as connection, connection.cursor() as cursor:
+        try:
+            cursor.execute(
+                """INSERT INTO bookings (unit_id, client_id, check_in, check_out,
+                                         status, total_price, notes)
+                   VALUES (%s, %s, %s, %s, 'confirmed', %s, %s) RETURNING id""",
+                (quote.unit_id, quote.client_id, quote.check_in, quote.check_out,
+                 quote.total, notes),
+            )
+        except Exception as error:
+            raise _as_clash(error) from error
+        booking_id = cursor.fetchone()["id"]
+        cursor.execute(
+            "UPDATE quotes SET status = 'accepted', booking_id = %s WHERE id = %s",
+            (booking_id, quote.id),
+        )
+    return booking_id
+
+
+def cancel_quote(quote_id: int, booking_id: int | None = None) -> None:
+    """Cancel a quote, and the booking it created if it made one.
+
+    Leaving the booking confirmed would keep the flat blocked on the calendar
+    for a stay nobody is taking - the opposite of what cancelling means.
+    """
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute("UPDATE quotes SET status = 'cancelled' WHERE id = %s", (quote_id,))
+        if booking_id is not None:
+            cursor.execute(
+                "UPDATE bookings SET status = 'cancelled' WHERE id = %s", (booking_id,)
+            )

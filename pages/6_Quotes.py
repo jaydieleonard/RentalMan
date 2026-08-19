@@ -8,13 +8,20 @@ anything to it. It does not expire, cancel or delete.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from db import queries
-from lib.models import QUOTE_ACCEPTED, QUOTE_CANCELLED, QUOTE_OPEN, QUOTE_STATUSES
+from lib.availability import is_available
+from lib.models import (
+    CANCELLED,
+    QUOTE_ACCEPTED,
+    QUOTE_CANCELLED,
+    QUOTE_OPEN,
+    QUOTE_STATUSES,
+)
 from lib.quotes import FOLLOW_UP_DAYS, days_waiting, needs_follow_up, quote_message
 from ui import page
 from ui.format import CURRENCY, date_range, money, nights as night_count
@@ -53,7 +60,12 @@ if waiting:
 
 # --- The list -------------------------------------------------------------
 
-status_filter = st.multiselect("Status", QUOTE_STATUSES, default=[QUOTE_OPEN])
+# Accepted quotes stay in view by default: accepting one is the moment you
+# most want to see it confirm itself, and filtering it away the instant it is
+# answered makes the page look like the click did nothing.
+status_filter = st.multiselect(
+    "Status", QUOTE_STATUSES, default=[QUOTE_OPEN, QUOTE_ACCEPTED]
+)
 listed = [q for q in quotes if not status_filter or q.status in status_filter]
 
 st.dataframe(
@@ -159,17 +171,62 @@ with st.expander("Resend - copy the message or download the PDF", expanded=False
 # --- Answering it ---------------------------------------------------------
 
 st.markdown("**Did they take it?**")
-answer = st.columns([2, 2, 4])
-if quote.status != QUOTE_ACCEPTED and answer[0].button("Mark accepted", type="primary"):
-    queries.set_quote_status(quote.id, QUOTE_ACCEPTED)
-    st.rerun()
+
+if quote.booking_id is not None:
+    booking = queries.get_booking(quote.booking_id)
+    if booking is None:
+        st.warning(f"This quote was accepted, but booking #{quote.booking_id} no longer exists.")
+    elif booking.status == CANCELLED:
+        st.warning(f"Booking #{booking.id} was made from this quote and has since been cancelled.")
+    else:
+        st.success(
+            f"Accepted - booking #{booking.id} holds {unit.name} for these dates. "
+            "It is on the calendar."
+        )
+
+# A quote holds nothing, so the flat may have gone since it was sent. Checked
+# before offering to accept, rather than after the guest has been told yes.
+clash = None
+if quote.booking_id is None and quote.status != QUOTE_CANCELLED:
+    window = (quote.check_in - timedelta(days=14), quote.check_out + timedelta(days=14))
+    availability = is_available(
+        quote.unit_id,
+        quote.check_in,
+        quote.check_out,
+        queries.list_bookings(*window, unit_ids=[quote.unit_id]),
+        queries.list_turnover_rules(quote.unit_id),
+        queries.list_seasons(),
+        queries.list_unit_blocks(*window),
+    )
+    if not availability.available:
+        clash = availability
+        st.error(
+            f"{availability.reason} These dates are no longer free, so this quote "
+            "cannot be turned into a booking. Search again for something else to offer."
+        )
+
+answer = st.columns([3, 2, 3])
+if quote.booking_id is None and quote.status != QUOTE_CANCELLED:
+    if answer[0].button(
+        "Accept and book it", type="primary", disabled=clash is not None
+    ):
+        if clash is not None:
+            st.error("Those dates are not free - nothing was booked.")
+        else:
+            try:
+                booking_id = queries.accept_quote(quote, notes=f"From quote #{quote.id}")
+            except queries.BookingClash as taken:
+                st.error(str(taken))
+            else:
+                st.success(f"Booked as #{booking_id}. The calendar now shows it.")
+                st.rerun()
+
 if quote.status != QUOTE_CANCELLED and answer[1].button("Mark cancelled"):
-    queries.set_quote_status(quote.id, QUOTE_CANCELLED)
+    queries.cancel_quote(quote.id, quote.booking_id)
     st.rerun()
 
-if quote.status == QUOTE_ACCEPTED and quote.booking_id is None:
-    st.info(
-        "Accepting a quote records the answer but does not yet hold the dates - "
-        "turning it into a booking in one action is the next phase. For now, enter "
-        "it on the **Bookings** page so it appears on the calendar."
+if quote.booking_id is not None:
+    st.caption(
+        "Cancelling this quote also cancels the booking it made, so the flat stops "
+        "being held on the calendar."
     )

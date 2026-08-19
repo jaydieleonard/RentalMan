@@ -94,6 +94,9 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "get_quote", lambda quote_id: QUOTES[0])
     monkeypatch.setattr(queries, "save_quote", lambda *args, **kwargs: 1)
     monkeypatch.setattr(queries, "set_quote_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(queries, "get_booking", lambda booking_id: BOOKINGS[0])
+    monkeypatch.setattr(queries, "accept_quote", lambda quote, notes="": 99)
+    monkeypatch.setattr(queries, "cancel_quote", lambda *args, **kwargs: None)
     return monkeypatch
 
 
@@ -379,3 +382,74 @@ def test_quotes_page_is_calm_when_there_are_none(stubbed_database, monkeypatch):
 
     assert not app.exception
     assert any("No quotes yet" in element.value for element in app.info)
+
+
+def test_accepting_a_quote_books_it(stubbed_database, monkeypatch):
+    """One action: the flat is held on the calendar, not just marked accepted."""
+    booked = []
+    monkeypatch.setattr(
+        queries, "accept_quote",
+        lambda quote, notes="": booked.append((quote.id, notes)) or 99,
+    )
+
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+    button_labelled(app, "Accept and book it").click().run()
+
+    assert booked == [(1, "From quote #1")]
+    assert any("Booked as #99" in element.value for element in app.success)
+
+
+def test_a_quote_whose_dates_have_gone_cannot_be_booked(stubbed_database, monkeypatch):
+    """A quote holds nothing, so the flat may be sold from under it."""
+    quote = QUOTES[0]
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [
+            Booking(5, quote.unit_id, 1, quote.check_in, quote.check_out, CONFIRMED)
+        ],
+    )
+    booked = []
+    monkeypatch.setattr(
+        queries, "accept_quote", lambda quote, notes="": booked.append(quote.id) or 99
+    )
+
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+
+    assert any("no longer free" in element.value for element in app.error)
+
+    button_labelled(app, "Accept and book it").click().run()
+    assert booked == [], "a quote whose dates are taken must not become a booking"
+
+
+def test_an_accepted_quote_shows_the_booking_holding_the_dates(stubbed_database, monkeypatch):
+    accepted = SavedQuote(
+        1, 2, 1, TODAY, TODAY + timedelta(days=3), 4, Decimal("7200.00"),
+        "accepted", TODAY - timedelta(days=9), QUOTE_LINES, "", 42,
+    )
+    monkeypatch.setattr(queries, "get_quote", lambda quote_id: accepted)
+    monkeypatch.setattr(queries, "list_quotes", lambda statuses=None: [accepted])
+
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+
+    assert any("holds Harbour View 6" in element.value for element in app.success)
+    # Already booked, so there is nothing left to accept.
+    assert not any(button.label == "Accept and book it" for button in app.button)
+
+
+def test_cancelling_an_accepted_quote_also_cancels_its_booking(stubbed_database, monkeypatch):
+    accepted = SavedQuote(
+        1, 2, 1, TODAY, TODAY + timedelta(days=3), 4, Decimal("7200.00"),
+        "accepted", TODAY, QUOTE_LINES, "", 42,
+    )
+    monkeypatch.setattr(queries, "get_quote", lambda quote_id: accepted)
+    monkeypatch.setattr(queries, "list_quotes", lambda statuses=None: [accepted])
+    cancelled = []
+    monkeypatch.setattr(
+        queries, "cancel_quote",
+        lambda quote_id, booking_id=None: cancelled.append((quote_id, booking_id)),
+    )
+
+    app = AppTest.from_file("pages/6_Quotes.py", default_timeout=30).run()
+    button_labelled(app, "Mark cancelled").click().run()
+
+    assert cancelled == [(1, 42)], "the booking it made must be cancelled too"
