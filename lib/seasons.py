@@ -19,7 +19,7 @@ runs 1 Dec into 15 Jan crosses the year boundary without special handling.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Iterable, Iterator, Sequence
 
@@ -221,3 +221,78 @@ def validate_calendar(
             )
 
     return problems
+
+
+@dataclass(frozen=True)
+class SeasonChange:
+    """What a new or moved period does to one that was already there.
+
+    Reported rather than applied silently: reshaping somebody's season calendar
+    without saying what moved is how a year's rates quietly become wrong.
+    """
+
+    #: "removed", "shortened" or "split"
+    kind: str
+    original: SeasonDefinition
+    #: What the original becomes - empty when it is removed entirely.
+    replacements: tuple[SeasonDefinition, ...]
+
+    def describe(self) -> str:
+        was = (
+            f"{self.original.label} {self.original.start_date.isoformat()} to "
+            f"{self.original.end_date.isoformat()}"
+        )
+        if self.kind == "removed":
+            return f"{was} was removed - the new period covers all of it."
+        becomes = " and ".join(
+            f"{part.start_date.isoformat()} to {part.end_date.isoformat()}"
+            for part in self.replacements
+        )
+        verb = "was split into" if self.kind == "split" else "was shortened to"
+        return f"{was} {verb} {becomes}."
+
+
+def carve_out(
+    definitions: Iterable[SeasonDefinition],
+    start: date,
+    end: date,
+    ignore_id: int | None = None,
+) -> list[SeasonChange]:
+    """Work out what must give way for a period to occupy start..end.
+
+    Every date belongs to exactly one season, so putting a period over dates
+    another season already holds means that other season yields the overlap -
+    shrinking back, splitting in two if the new period lands in its middle, or
+    going altogether if it is wholly covered.
+
+    `ignore_id` is the period being moved, which must not be asked to give way
+    to itself.
+    """
+    changes: list[SeasonChange] = []
+
+    for definition in definitions:
+        if definition.id is not None and definition.id == ignore_id:
+            continue
+        if definition.end_date < start or definition.start_date > end:
+            continue  # nowhere near it
+
+        before_survives = definition.start_date < start
+        after_survives = definition.end_date > end
+
+        if before_survives and after_survives:
+            changes.append(SeasonChange("split", definition, (
+                replace(definition, end_date=start - ONE_DAY),
+                replace(definition, id=None, start_date=end + ONE_DAY),
+            )))
+        elif before_survives:
+            changes.append(SeasonChange("shortened", definition, (
+                replace(definition, end_date=start - ONE_DAY),
+            )))
+        elif after_survives:
+            changes.append(SeasonChange("shortened", definition, (
+                replace(definition, start_date=end + ONE_DAY),
+            )))
+        else:
+            changes.append(SeasonChange("removed", definition, ()))
+
+    return changes

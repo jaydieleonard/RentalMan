@@ -15,7 +15,7 @@ import streamlit as st
 
 from db import queries
 from lib.models import SEASON_LABELS
-from lib.seasons import validate_calendar
+from lib.seasons import carve_out, validate_calendar
 from ui import page
 from ui.grid import render_year_ribbon
 
@@ -25,6 +25,15 @@ st.caption(
     "One calendar covers every flat. These dates drive what a guest is charged and, "
     "from Phase 5, what is due back to each owner."
 )
+
+# Held over the rerun that follows a save, so what moved is actually readable
+# rather than being written and immediately rerun away.
+outcome = st.session_state.pop("season_outcome", None)
+if outcome:
+    message, moved = outcome
+    st.success(message)
+    for description in moved:
+        st.info(description)
 
 known_years = queries.list_season_years()
 this_year = date.today().year
@@ -75,18 +84,16 @@ with st.form("add_season", clear_on_submit=True):
         if end < start:
             st.error("The end date cannot be before the start date.")
         else:
-            try:
-                queries.create_season(label, start, end, int(year))
-                st.success(f"Added {label}: {start} to {end}.")
-                st.rerun()
-            except Exception as error:
-                # The database refuses overlapping periods outright, which is
-                # worth saying in plain words rather than showing a traceback.
-                st.error(
-                    "Those dates overlap a season period that already exists. "
-                    "Every date must belong to exactly one season."
-                )
-                st.caption(str(error))
+            # Anything already holding these dates gives way, rather than the
+            # save being refused: painting a stretch of the year a different
+            # season is the ordinary way this calendar gets edited.
+            changes = carve_out(queries.list_seasons(), start, end)
+            queries.save_season_making_room(changes, None, label, start, end, int(year))
+            st.session_state.season_outcome = (
+                f"Added {label}: {start} to {end}.",
+                [change.describe() for change in changes],
+            )
+            st.rerun()
 
 st.caption(
     "A period may run past the end of the year - 1 December to 15 January is one row, "
@@ -114,15 +121,17 @@ if definitions:
                 if new_end < new_start:
                     st.error("The end date cannot be before the start date.")
                 else:
-                    try:
-                        queries.update_season(
-                            definition.id, new_label, new_start, new_end, int(year)
-                        )
-                        st.success("Saved.")
-                        st.rerun()
-                    except Exception as error:
-                        st.error("Those dates overlap another season period.")
-                        st.caption(str(error))
+                    changes = carve_out(
+                        queries.list_seasons(), new_start, new_end, ignore_id=definition.id
+                    )
+                    queries.save_season_making_room(
+                        changes, definition.id, new_label, new_start, new_end, int(year)
+                    )
+                    st.session_state.season_outcome = (
+                        f"{new_label} now runs {new_start} to {new_end}.",
+                        [change.describe() for change in changes],
+                    )
+                    st.rerun()
             if delete.form_submit_button("Delete this period"):
                 queries.delete_season(definition.id)
                 st.success("Removed.")

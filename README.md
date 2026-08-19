@@ -117,6 +117,10 @@ needs it: it connects from its own host, not from a laptop behind a firewall.
 - Only `confirmed` bookings hold dates. Enquiries and unaccepted quotes do not
   take a flat off the market (`BLOCKING_STATUSES` in `lib/models.py`).
 - Money is `Decimal` everywhere, never `float`.
+- Setting a season over dates another season holds makes room rather than being
+  refused: the other period shrinks back, splits in two, or goes. The calendar
+  is edited by painting stretches of the year, and every date still belongs to
+  exactly one season. What moved is reported, never done silently.
 - Owner income is the nights **clipped to the month** and then priced, so a stay
   running from the 28th to the 3rd puts three nights on one statement and two on
   the next rather than landing whole on whichever month it started in.

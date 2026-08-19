@@ -7,6 +7,7 @@ import pytest
 from lib.models import SeasonDefinition
 from lib.seasons import (
     InvalidStayError,
+    carve_out,
     UnpricedNightError,
     find_gaps,
     season_for_date,
@@ -152,3 +153,77 @@ def test_gaps_are_reported_as_inclusive_ranges():
     ]
 
     assert find_gaps(definitions, 2027) == [(date(2027, 4, 1), date(2027, 4, 30))]
+
+
+def test_a_new_period_pushes_back_the_one_it_overlaps():
+    """Painting High over the start of Low shortens Low rather than being refused."""
+    existing = [season("Low", (2026, 3, 1), (2026, 7, 1), id=1)]
+
+    changes = carve_out(existing, date(2026, 3, 1), date(2026, 4, 16))
+
+    assert len(changes) == 1
+    assert changes[0].kind == "shortened"
+    survivor = changes[0].replacements[0]
+    assert survivor.start_date == date(2026, 4, 17)
+    assert survivor.end_date == date(2026, 7, 1)
+
+
+def test_a_period_landing_in_the_middle_splits_the_other_in_two():
+    existing = [season("Low", (2026, 3, 1), (2026, 7, 1), id=1)]
+
+    changes = carve_out(existing, date(2026, 4, 3), date(2026, 4, 16))
+
+    assert changes[0].kind == "split"
+    before, after = changes[0].replacements
+    assert (before.start_date, before.end_date) == (date(2026, 3, 1), date(2026, 4, 2))
+    assert (after.start_date, after.end_date) == (date(2026, 4, 17), date(2026, 7, 1))
+    assert after.id is None, "the second half is a new row, not the original"
+
+
+def test_a_period_wholly_covered_is_removed():
+    existing = [season("Medium", (2026, 4, 5), (2026, 4, 10), id=1)]
+
+    changes = carve_out(existing, date(2026, 4, 1), date(2026, 4, 30))
+
+    assert changes[0].kind == "removed"
+    assert changes[0].replacements == ()
+
+
+def test_a_period_that_ends_before_it_starts_being_moved_is_left_alone():
+    existing = [
+        season("Low", (2026, 1, 1), (2026, 2, 28), id=1),
+        season("Medium", (2026, 8, 1), (2026, 9, 30), id=2),
+    ]
+
+    assert carve_out(existing, date(2026, 4, 1), date(2026, 4, 30)) == []
+
+
+def test_a_period_being_moved_does_not_give_way_to_itself():
+    """Editing High's own dates must not treat High as an obstacle."""
+    existing = [season("High", (2026, 1, 1), (2026, 1, 15), id=7)]
+
+    assert carve_out(existing, date(2026, 1, 5), date(2026, 1, 20), ignore_id=7) == []
+
+
+def test_one_period_can_displace_several_at_once():
+    existing = [
+        season("Low", (2026, 3, 1), (2026, 3, 31), id=1),
+        season("Medium", (2026, 4, 1), (2026, 4, 30), id=2),
+        season("Low", (2026, 5, 1), (2026, 5, 31), id=3),
+    ]
+
+    changes = carve_out(existing, date(2026, 3, 20), date(2026, 5, 10))
+
+    assert [change.kind for change in changes] == ["shortened", "removed", "shortened"]
+    assert changes[0].replacements[0].end_date == date(2026, 3, 19)
+    assert changes[2].replacements[0].start_date == date(2026, 5, 11)
+
+
+def test_the_change_says_what_happened_in_words():
+    existing = [season("Low", (2026, 3, 1), (2026, 7, 1), id=1)]
+
+    described = carve_out(existing, date(2026, 4, 3), date(2026, 4, 16))[0].describe()
+
+    assert "was split into" in described
+    assert "2026-03-01 to 2026-04-02" in described
+    assert "2026-04-17 to 2026-07-01" in described

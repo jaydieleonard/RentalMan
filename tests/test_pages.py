@@ -865,3 +865,47 @@ def test_the_statement_page_explains_why_cleaning_may_be_nothing(stubbed_databas
 
     captions = " ".join(element.value for element in app.caption)
     assert "Only cleans marked done are billed on" in captions
+
+
+def test_adding_a_period_over_another_moves_it_rather_than_refusing(stubbed_database, monkeypatch):
+    """The screen the parents actually use: paint a stretch, it takes effect."""
+    existing = [
+        SeasonDefinition(1, "Low", date(YEAR, 3, 1), date(YEAR, 7, 1), YEAR),
+    ]
+    monkeypatch.setattr(queries, "list_seasons", lambda year=None: existing)
+    monkeypatch.setattr(queries, "list_season_years", lambda: [YEAR])
+    written = []
+    monkeypatch.setattr(
+        queries, "save_season_making_room",
+        lambda changes, season_id, label, start, end, year: written.append(
+            (season_id, label, start, end, [c.kind for c in changes])
+        ),
+    )
+
+    app = AppTest.from_file("pages/4_Seasons.py", default_timeout=30)
+    app.run()
+    app.date_input[0].set_value(date(YEAR, 4, 3))
+    app.date_input[1].set_value(date(YEAR, 4, 16))
+    button_labelled(app, "Add").click().run()
+
+    assert len(written) == 1
+    season_id, label, start, end, kinds = written[0]
+    assert season_id is None
+    assert (start, end) == (date(YEAR, 4, 3), date(YEAR, 4, 16))
+    assert kinds == ["split"], "the period underneath is split, not left to collide"
+
+
+def test_the_page_says_what_gave_way(stubbed_database, monkeypatch):
+    existing = [SeasonDefinition(1, "Low", date(YEAR, 3, 1), date(YEAR, 7, 1), YEAR)]
+    monkeypatch.setattr(queries, "list_seasons", lambda year=None: existing)
+    monkeypatch.setattr(queries, "list_season_years", lambda: [YEAR])
+    monkeypatch.setattr(queries, "save_season_making_room", lambda *args, **kwargs: None)
+
+    app = AppTest.from_file("pages/4_Seasons.py", default_timeout=30)
+    app.run()
+    app.date_input[0].set_value(date(YEAR, 4, 3))
+    app.date_input[1].set_value(date(YEAR, 4, 16))
+    button_labelled(app, "Add").click().run()
+
+    told = " ".join(element.value for element in app.info)
+    assert "was split into" in told, told

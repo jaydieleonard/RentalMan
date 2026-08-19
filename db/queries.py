@@ -965,3 +965,53 @@ def set_statement_status(statement_id: int, status: str, paid_on: date | None = 
         "UPDATE owner_statements SET status = %s, paid_on = %s WHERE id = %s",
         (status, paid_on, statement_id),
     )
+
+
+def save_season_making_room(
+    changes: Sequence,
+    season_id: int | None,
+    label: str,
+    start_date: date,
+    end_date: date,
+    year: int,
+) -> None:
+    """Write a season period, moving whatever else held those dates.
+
+    `changes` is the plan from lib.seasons.carve_out - this only applies it.
+    Order matters and is the whole reason it is one transaction: the periods
+    giving way are shrunk or removed first, so that by the time the new period
+    is written there is nothing left for it to collide with.
+    """
+    with transaction() as connection, connection.cursor() as cursor:
+        for change in changes:
+            if change.kind == "removed":
+                cursor.execute(
+                    "DELETE FROM season_definitions WHERE id = %s", (change.original.id,)
+                )
+                continue
+            first, *rest = change.replacements
+            cursor.execute(
+                """UPDATE season_definitions
+                      SET start_date = %s, end_date = %s WHERE id = %s""",
+                (first.start_date, first.end_date, change.original.id),
+            )
+            for part in rest:
+                cursor.execute(
+                    """INSERT INTO season_definitions (label, start_date, end_date, year)
+                       VALUES (%s, %s, %s, %s)""",
+                    (part.label, part.start_date, part.end_date, part.year),
+                )
+
+        if season_id is None:
+            cursor.execute(
+                """INSERT INTO season_definitions (label, start_date, end_date, year)
+                   VALUES (%s, %s, %s, %s)""",
+                (label, start_date, end_date, year),
+            )
+        else:
+            cursor.execute(
+                """UPDATE season_definitions
+                      SET label = %s, start_date = %s, end_date = %s, year = %s
+                    WHERE id = %s""",
+                (label, start_date, end_date, year, season_id),
+            )
