@@ -45,6 +45,7 @@ PAGES = [
     "pages/7_Cleaning.py",
     "pages/8_Statements.py",
     "pages/9_Clients.py",
+    "pages/10_Reports.py",
 ]
 
 TODAY = date.today()
@@ -977,3 +978,58 @@ def test_a_guest_with_history_cannot_be_deleted_by_accident(stubbed_database):
     app = AppTest.from_file("pages/9_Clients.py", default_timeout=30).run()
 
     assert not any(button.label == "Delete permanently" for button in app.button)
+
+
+def test_the_report_headline_shows_occupancy_and_revenue(stubbed_database, monkeypatch):
+    """One five-night stay in the fixture, across two flats."""
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [
+            Booking(1, 1, 1, TODAY - timedelta(days=4), TODAY + timedelta(days=1),
+                    CONFIRMED, Decimal("9000.00")),
+        ],
+    )
+
+    app = AppTest.from_file("pages/10_Reports.py", default_timeout=60)
+    app.run()
+    # The page opens on last month, the period you would be reviewing; the
+    # fixture's stay is in this one.
+    app.selectbox[0].select("This month").run()
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert "Occupancy" in metrics
+    assert metrics["Revenue"] == "R9 000.00"
+    assert metrics["Nights let"].startswith("5 of ")
+    assert not app.exception
+
+
+def test_the_report_names_the_flats_that_took_nobody(stubbed_database, monkeypatch):
+    """An empty flat is the most interesting row on an occupancy report."""
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [],
+    )
+
+    app = AppTest.from_file("pages/10_Reports.py", default_timeout=60).run()
+
+    captions = " ".join(element.value for element in app.caption)
+    assert "took nobody at all" in captions
+    assert "Seaview 3" in captions
+
+
+def test_a_hole_in_the_season_calendar_is_flagged_on_the_report(stubbed_database, monkeypatch):
+    """Nights no season covers would otherwise vanish from the season split."""
+    monkeypatch.setattr(queries, "list_seasons", lambda year=None: [])
+    monkeypatch.setattr(
+        queries, "list_bookings",
+        lambda start=None, end=None, unit_ids=None, statuses=None: [
+            Booking(1, 1, 1, TODAY - timedelta(days=4), TODAY + timedelta(days=1),
+                    CONFIRMED, Decimal("9000.00")),
+        ],
+    )
+
+    app = AppTest.from_file("pages/10_Reports.py", default_timeout=60)
+    app.run()
+    app.selectbox[0].select("This month").run()
+
+    assert any("no season covers" in element.value for element in app.warning)

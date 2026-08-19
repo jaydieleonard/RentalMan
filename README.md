@@ -21,6 +21,8 @@ numbers referenced in the code point there.
   month-at-a-glance calendar of who is cleaning what
 - Guests: find anyone by name, phone or email, see what their history adds up
   to, and merge two records that turned out to be the same person
+- Reports: occupancy and revenue by flat, by season, by owner and month by
+  month, over any period
 - Owner accounting: owner rates per flat and season, monthly statements pulling
   together rental income, the management fee and the cleans actually done, as a
   PDF, with paid/not-paid tracked against each one
@@ -74,6 +76,7 @@ lib/              Business logic — no database, no Streamlit, fully tested
   cleaning.py       Which cleans a flat needs, and when
   statements.py     What each owner is owed for a month
   clients.py        What a guest's history adds up to
+  reporting.py      Occupancy and revenue over a period
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
 ui/               Streamlit-side helpers: the grid, PDFs, formatting, login
@@ -120,6 +123,12 @@ needs it: it connects from its own host, not from a laptop behind a firewall.
 - Only `confirmed` bookings hold dates. Enquiries and unaccepted quotes do not
   take a flat off the market (`BLOCKING_STATUSES` in `lib/models.py`).
 - Money is `Decimal` everywhere, never `float`.
+- Occupancy leaves blocked nights out of the denominator. A flat off the market
+  for repairs was not empty for want of a guest, and counting those against it
+  would make maintenance look like a sales problem.
+- Revenue is the money that actually changed hands, apportioned across seasons
+  in proportion to the nights, so the seasons always add back to the total even
+  when a guest was charged something other than the rate file says.
 - Setting a season over dates another season holds makes room rather than being
   refused: the other period shrinks back, splits in two, or goes. The calendar
   is edited by painting stretches of the year, and every date still belongs to
