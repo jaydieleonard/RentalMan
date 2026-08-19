@@ -18,12 +18,20 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    Image as ReportLabImage,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from lib.models import QuoteLine
+from ui.brand import LOGO_PRINT, NAVY
 from ui.format import CURRENCY, money
 
-INK = colors.HexColor("#1a1a1a")
+INK = colors.HexColor(NAVY)
 MUTED = colors.HexColor("#6b6b6b")
 RULE = colors.HexColor("#d9d9d9")
 BAND = colors.HexColor("#f4f4f4")
@@ -42,7 +50,44 @@ def _styles() -> dict[str, ParagraphStyle]:
         "body": ParagraphStyle("body", parent=base["Normal"], fontSize=10.5, leading=15, textColor=INK),
         "right": ParagraphStyle("right", parent=base["Normal"], fontSize=10.5, alignment=TA_RIGHT),
         "small": ParagraphStyle("small", parent=base["Normal"], fontSize=9, textColor=MUTED, leading=13),
+        "letterhead": ParagraphStyle(
+            "letterhead", parent=base["Normal"], fontSize=11, leading=16,
+            alignment=TA_RIGHT, textColor=MUTED,
+        ),
     }
+
+
+def _letterhead(style, reference: int | None, generated_on: date | None, business_name: str):
+    """Logo on the left, what the document is on the right.
+
+    The guest sees this page and nothing else of the business, so it carries
+    the mark rather than a plain word at the top of an otherwise blank sheet.
+    """
+    meta = "Quote"
+    if reference:
+        meta += f"<br/>Reference {reference}"
+    if generated_on:
+        meta += f"<br/>{generated_on.strftime('%d %B %Y')}"
+
+    if LOGO_PRINT.exists():
+        badge = ReportLabImage(str(LOGO_PRINT), width=38 * mm, height=38 * mm * 515 / 720)
+    else:
+        badge = Paragraph(business_name, style["title"])
+
+    head = Table(
+        [[badge, Paragraph(meta, style["letterhead"])]],
+        colWidths=[62 * mm, None],
+        hAlign="LEFT",
+    )
+    head.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.8, RULE),
+    ]))
+    return head
 
 
 def quote_pdf(
@@ -69,15 +114,7 @@ def quote_pdf(
     )
 
     nights = (check_out - check_in).days
-    story = [
-        Paragraph("Quote", style["title"]),
-        Paragraph(
-            f"{business_name}"
-            + (f" &nbsp;&middot;&nbsp; reference {reference}" if reference else "")
-            + (f" &nbsp;&middot;&nbsp; {generated_on.strftime('%d %B %Y')}" if generated_on else ""),
-            style["sub"],
-        ),
-    ]
+    story = [_letterhead(style, reference, generated_on, business_name), Spacer(1, 16)]
 
     details = [
         ["Guest", client_name],

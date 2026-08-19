@@ -16,6 +16,8 @@ import hmac
 
 import streamlit as st
 
+from ui.brand import LOGO
+
 SESSION_KEY = "rentalman_authenticated"
 
 
@@ -34,9 +36,10 @@ def require_login() -> None:
     if st.session_state.get(SESSION_KEY):
         return
 
-    st.title("RentalMan")
-    st.caption("Please sign in to continue.")
-    entered = st.text_input("Password", type="password")
+    centre = st.columns([1, 2, 1])[1]
+    centre.image(str(LOGO), width=320)
+    centre.caption("Please sign in to continue.")
+    entered = centre.text_input("Password", type="password")
     if entered:
         # hmac.compare_digest rather than == so a wrong password cannot be
         # narrowed down by how long the check took.
@@ -44,5 +47,5 @@ def require_login() -> None:
             st.session_state[SESSION_KEY] = True
             st.rerun()
         else:
-            st.error("That password is not right.")
+            centre.error("That password is not right.")
     st.stop()

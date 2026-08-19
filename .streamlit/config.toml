@@ -1,0 +1,11 @@
+# Pinned to the light theme on purpose: the logo is dark navy on transparent,
+# which disappears against a dark sidebar. Colours are taken from the artwork.
+[theme]
+base = "light"
+primaryColor = "#0064d6"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f2f5f9"
+textColor = "#072647"
+
+[browser]
+gatherUsageStats = false

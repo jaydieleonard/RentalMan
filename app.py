@@ -14,11 +14,12 @@ import streamlit as st
 from db import queries
 from lib.seasons import validate_calendar
 from ui import page
+from ui.brand import TAGLINE
 from ui.format import money
 
-page.start("RentalMan")
+page.start("RentalMan", hero=True)
 
-st.caption("Bookings, rates and owner accounting for the flats.")
+st.caption(TAGLINE)
 
 units = queries.list_units()
 owners = queries.list_owners()

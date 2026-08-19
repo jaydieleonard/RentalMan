@@ -11,12 +11,30 @@ import streamlit as st
 
 from db import connection
 from ui.auth import require_login
+from ui.brand import BUSINESS_NAME, ICON, LOGO
 
 
-def start(title: str, icon: str = "🏖️", require_database: bool = True) -> None:
-    st.set_page_config(page_title=f"{title} - RentalMan", page_icon=icon, layout="wide")
+def start(title: str, require_database: bool = True, hero: bool = False) -> None:
+    """Set the page up, put the login gate in front of it, check the database.
+
+    `hero` swaps the text heading for the logo itself - used on the home page,
+    where the app is introducing itself rather than labelling a screen.
+    """
+    st.set_page_config(
+        page_title=f"{title} - {BUSINESS_NAME}",
+        page_icon=str(ICON),
+        layout="wide",
+    )
     require_login()
-    st.title(title)
+
+    # Sits above the page list in the sidebar; the mark alone is used when the
+    # sidebar is collapsed to a strip.
+    st.logo(str(LOGO), icon_image=str(ICON), size="large")
+
+    if hero:
+        st.image(str(LOGO), width=300)
+    else:
+        st.title(title)
 
     if not require_database:
         return

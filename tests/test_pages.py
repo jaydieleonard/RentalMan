@@ -540,3 +540,33 @@ def test_editing_a_booking_keeps_its_guest_without_being_asked(stubbed_database,
 
     assert created == []
     assert updated and updated[0]["client_id"] == 1
+
+
+def test_every_page_carries_the_logo(stubbed_database):
+    """The mark in the sidebar and the tab icon, on all of them."""
+    from ui.brand import ICON, LOGO
+
+    assert LOGO.exists() and ICON.exists()
+
+    for path in PAGES:
+        app = AppTest.from_file(path, default_timeout=30).run()
+        assert not app.exception, (path, [str(e) for e in app.exception])
+
+
+def test_the_quote_pdf_is_on_letterhead():
+    """The one document a guest ever sees of the business."""
+    from datetime import date as real_date
+
+    from ui.pdf import quote_pdf
+
+    pdf = quote_pdf(
+        "Seaview 3", "M. Abrahams", real_date(2027, 1, 1), real_date(2027, 1, 4),
+        QUOTE_LINES, Decimal("7200.00"), guests=2, reference=8,
+        generated_on=real_date(2026, 8, 19),
+    )
+
+    assert pdf[:5] == b"%PDF-"
+    # An image stream is in there, which a text-only letterhead would not have.
+    assert b"/Image" in pdf
+    # ...and it is the print-sized copy, not the full-resolution one.
+    assert len(pdf) < 200_000
