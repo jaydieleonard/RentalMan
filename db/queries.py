@@ -1015,3 +1015,69 @@ def save_season_making_room(
                     WHERE id = %s""",
                 (label, start_date, end_date, year, season_id),
             )
+
+
+def list_clients_with_stays(search: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    """Clients with how much history each has, for the list view.
+
+    Counted in the database rather than by loading every booking: the list is
+    for finding somebody, and it should not get slower as the business does.
+    """
+    clauses, params = [], []
+    if search.strip():
+        clauses.append("(c.name ILIKE %s OR c.phone ILIKE %s OR c.email ILIKE %s)")
+        term = f"%{search.strip()}%"
+        params.extend([term, term, term])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    return fetch_all(
+        f"""SELECT c.*,
+                   count(b.id) FILTER (WHERE b.status = 'confirmed') AS stays,
+                   max(b.check_out) FILTER (WHERE b.status = 'confirmed') AS last_stay
+              FROM clients c
+              LEFT JOIN bookings b ON b.client_id = c.id
+              {where}
+             GROUP BY c.id
+             ORDER BY stays DESC, c.name
+             LIMIT %s""",
+        tuple(params),
+    )
+
+
+def bookings_for_client(client_id: int) -> list[Booking]:
+    rows = fetch_all(
+        "SELECT * FROM bookings WHERE client_id = %s ORDER BY check_in DESC", (client_id,)
+    )
+    return [_booking(row) for row in rows]
+
+
+def quotes_for_client(client_id: int) -> list[SavedQuote]:
+    rows = fetch_all(
+        "SELECT * FROM quotes WHERE client_id = %s ORDER BY generated_on DESC", (client_id,)
+    )
+    return [_saved_quote(row) for row in rows]
+
+
+def merge_clients(from_id: int, into_id: int) -> int:
+    """Move one client's history onto another and remove the duplicate.
+
+    Typing a guest's name slightly differently makes a second record, and two
+    half-histories are worse than one whole one. Everything is moved before the
+    duplicate goes, so nothing is orphaned.
+    """
+    if from_id == into_id:
+        return 0
+    moved = 0
+    with transaction() as connection, connection.cursor() as cursor:
+        for table in ("bookings", "quotes"):
+            cursor.execute(
+                f"UPDATE {table} SET client_id = %s WHERE client_id = %s", (into_id, from_id)
+            )
+            moved += cursor.rowcount
+        cursor.execute("DELETE FROM clients WHERE id = %s", (from_id,))
+    return moved
+
+
+def delete_client(client_id: int) -> None:
+    """Remove a client. Their bookings keep the dates but lose the name."""
+    execute("DELETE FROM clients WHERE id = %s", (client_id,))

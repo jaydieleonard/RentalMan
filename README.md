@@ -19,6 +19,8 @@ numbers referenced in the code point there.
   accepting one makes the booking that holds the dates
 - Cleaning: staff, service costs, the jobs worked out from the bookings, and a
   month-at-a-glance calendar of who is cleaning what
+- Guests: find anyone by name, phone or email, see what their history adds up
+  to, and merge two records that turned out to be the same person
 - Owner accounting: owner rates per flat and season, monthly statements pulling
   together rental income, the management fee and the cleans actually done, as a
   PDF, with paid/not-paid tracked against each one
@@ -71,6 +73,7 @@ lib/              Business logic — no database, no Streamlit, fully tested
   quotes.py         The guest-facing message and the follow-up flag
   cleaning.py       Which cleans a flat needs, and when
   statements.py     What each owner is owed for a month
+  clients.py        What a guest's history adds up to
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
 ui/               Streamlit-side helpers: the grid, PDFs, formatting, login

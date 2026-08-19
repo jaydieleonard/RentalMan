@@ -44,6 +44,7 @@ PAGES = [
     "pages/6_Quotes.py",
     "pages/7_Cleaning.py",
     "pages/8_Statements.py",
+    "pages/9_Clients.py",
 ]
 
 TODAY = date.today()
@@ -136,6 +137,22 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "set_quote_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(queries, "get_booking", lambda booking_id: BOOKINGS[0])
     monkeypatch.setattr(
+        queries, "list_clients_with_stays",
+        lambda search="", limit=50: [
+            {**{"id": c.id, "name": c.name, "phone": c.phone, "email": c.email,
+                "notes": c.notes},
+             "stays": 2 if c.id == 1 else 0,
+             "last_stay": TODAY - timedelta(days=40) if c.id == 1 else None}
+            for c in CLIENTS
+            if not search.strip() or search.strip().lower() in c.name.lower()
+        ],
+    )
+    monkeypatch.setattr(queries, "bookings_for_client", lambda client_id: BOOKINGS)
+    monkeypatch.setattr(queries, "quotes_for_client", lambda client_id: QUOTES)
+    monkeypatch.setattr(queries, "merge_clients", lambda from_id, into_id: 3)
+    monkeypatch.setattr(queries, "delete_client", lambda client_id: None)
+    monkeypatch.setattr(queries, "update_client", lambda client_id, **fields: None)
+    monkeypatch.setattr(
         queries, "find_clients",
         lambda term, limit=8: [c for c in CLIENTS if term.strip().lower() in c.name.lower()],
     )
@@ -179,7 +196,8 @@ def test_page_runs_with_an_empty_database(path, stubbed_database, monkeypatch):
     for name in ("list_owners", "list_units", "list_seasons", "list_client_rates",
                  "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks",
                  "list_quotes", "list_cleaning_staff", "list_cleaning_jobs",
-                 "list_unit_cleaning_rates", "list_owner_rates", "list_statements"):
+                 "list_unit_cleaning_rates", "list_owner_rates", "list_statements",
+                 "list_clients_with_stays", "bookings_for_client", "quotes_for_client"):
         monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
     monkeypatch.setattr(queries, "list_season_years", lambda: [])
 
@@ -909,3 +927,53 @@ def test_the_page_says_what_gave_way(stubbed_database, monkeypatch):
 
     told = " ".join(element.value for element in app.info)
     assert "was split into" in told, told
+
+
+def test_the_guest_record_shows_what_their_history_adds_up_to(stubbed_database):
+    app = AppTest.from_file("pages/9_Clients.py", default_timeout=30).run()
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Guests found"] == "1"
+    assert metrics["Stays"] == "1"          # one confirmed booking in the fixture
+    assert metrics["Nights"] == "5"
+
+
+def test_searching_for_somebody_who_is_not_there_says_so(stubbed_database):
+    app = AppTest.from_file("pages/9_Clients.py", default_timeout=30)
+    app.run()
+    app.text_input[0].set_value("Nobody At All").run()
+
+    assert any("Nobody on file matches" in element.value for element in app.info)
+    assert not app.exception
+
+
+def test_merging_moves_the_history_and_says_how_much(stubbed_database, monkeypatch):
+    """Two half-histories are worse than one whole one."""
+    second = Client(2, "M Abrahams", "082 555 0201")
+    monkeypatch.setattr(
+        queries, "list_clients_with_stays",
+        lambda search="", limit=50: [
+            {"id": 1, "name": "M. Abrahams", "phone": "", "email": "", "notes": "",
+             "stays": 2, "last_stay": None},
+            {"id": second.id, "name": second.name, "phone": second.phone, "email": "",
+             "notes": "", "stays": 1, "last_stay": None},
+        ],
+    )
+    merged = []
+    monkeypatch.setattr(
+        queries, "merge_clients",
+        lambda from_id, into_id: merged.append((from_id, into_id)) or 3,
+    )
+
+    app = AppTest.from_file("pages/9_Clients.py", default_timeout=30).run()
+    button_labelled(app, "Merge them").click().run()
+
+    assert merged == [(2, 1)], "the duplicate moves onto the record being kept"
+    assert any("3 record(s) moved across" in element.value for element in app.success)
+
+
+def test_a_guest_with_history_cannot_be_deleted_by_accident(stubbed_database):
+    """Only a record created by mistake - anything else gets merged instead."""
+    app = AppTest.from_file("pages/9_Clients.py", default_timeout=30).run()
+
+    assert not any(button.label == "Delete permanently" for button in app.button)
