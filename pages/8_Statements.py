@@ -18,7 +18,7 @@ import pandas as pd
 import streamlit as st
 
 from db import queries
-from lib.models import DRAFT, PAID, SENT, STATEMENT_STATUSES
+from lib.models import DRAFT, PAID, SENT
 from lib.statements import build_statement, month_bounds
 from ui import page
 from ui.format import money
