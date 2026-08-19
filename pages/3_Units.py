@@ -34,8 +34,8 @@ owners = queries.list_owners()
 owners_by_id = {owner.id: owner for owner in owners}
 units = queries.list_units(include_inactive=True)
 
-flats_tab, rates_tab, turnover_tab, owners_tab = st.tabs(
-    ["Flats", "Client rates", "Turnover & blocks", "Owners"]
+flats_tab, rates_tab, owner_rates_tab, turnover_tab, owners_tab = st.tabs(
+    ["Flats", "Client rates", "Owner rates", "Turnover & blocks", "Owners"]
 )
 
 # --- Flats ----------------------------------------------------------------
@@ -216,6 +216,71 @@ with rates_tab:
                         queries.delete_client_rate(unit.id, label, int(year))
                 st.success(f"{year} rates saved for {unit.name}.")
                 st.rerun()
+
+# --- Owner rates ----------------------------------------------------------
+
+with owner_rates_tab:
+    st.caption(
+        "What is due to the **owner** per night, per season. This is not the client "
+        "rate less a cut - the business earns from the monthly management fee, so "
+        "the two figures are set independently and neither follows the other."
+    )
+    if not units:
+        page.no_data("flats", "Flats tab")
+    else:
+        picker = st.columns([3, 1])
+        unit_name = picker[0].selectbox(
+            "Flat", [unit.name for unit in units], key="owner_rate_unit"
+        )
+        year = picker[1].number_input(
+            "Year", min_value=2020, max_value=2100, value=date.today().year, step=1,
+            key="owner_rate_year",
+        )
+        unit = next(u for u in units if u.name == unit_name)
+        existing = {
+            rate.season_label: rate for rate in queries.list_owner_rates(unit.id, int(year))
+        }
+        charged = {
+            rate.season_label: rate for rate in queries.list_client_rates(unit.id, int(year))
+        }
+
+        with st.form("owner_rates"):
+            headings = st.columns([1, 2, 3])
+            headings[0].markdown("**Season**")
+            headings[1].markdown("**Due to owner, per night**")
+            headings[2].markdown("**Charged to guest**")
+
+            entered = {}
+            for label in SEASON_LABELS:
+                current = existing.get(label)
+                columns = st.columns([1, 2, 3])
+                columns[0].markdown(f"**{label}**")
+                entered[label] = columns[1].number_input(
+                    f"{label} owner rate", min_value=0.0, step=50.0,
+                    value=float(current.nightly_rate) if current else 0.0,
+                    label_visibility="collapsed",
+                    key=f"owner_rate_{unit.id}_{int(year)}_{label}",
+                )
+                guest_rate = charged.get(label)
+                columns[2].caption(
+                    f"guest pays {money(guest_rate.nightly_rate)}" if guest_rate
+                    else "no client rate set for this season"
+                )
+
+            if st.form_submit_button("Save owner rates", type="primary"):
+                for label, amount in entered.items():
+                    if amount > 0:
+                        queries.save_owner_rate(unit.id, label, int(year), Decimal(str(amount)))
+                    elif label in existing:
+                        queries.delete_owner_rate(unit.id, label, int(year))
+                st.success(f"{year} owner rates saved for {unit.name}.")
+                st.rerun()
+
+        st.caption(
+            f"{unit.name} also carries a management fee of "
+            f"{money(unit.monthly_management_fee)} a month, charged to the owner "
+            "whether or not the flat was let. Change it on the Flats tab."
+        )
 
 # --- Turnover rules and blocks -------------------------------------------
 

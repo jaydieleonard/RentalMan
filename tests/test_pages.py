@@ -25,6 +25,7 @@ from lib.models import (
     Client,
     ClientRate,
     Owner,
+    OwnerRate,
     QuoteLine,
     SavedQuote,
     SeasonDefinition,
@@ -42,6 +43,7 @@ PAGES = [
     "pages/5_Bookings.py",
     "pages/6_Quotes.py",
     "pages/7_Cleaning.py",
+    "pages/8_Statements.py",
 ]
 
 TODAY = date.today()
@@ -67,6 +69,23 @@ BOOKINGS = [
             Decimal("12000.00"), "Repeat guest"),
 ]
 RULES = [TurnoverRule(2, "High", 1)]
+OWNER_RATES = [
+    OwnerRate(unit.id, definition.label, YEAR, Decimal("1500.00"))
+    for unit in UNITS
+    for definition in SEASONS
+]
+# The statements page opens on last month, which is the one you would actually
+# be settling, so the fixture is for last month too.
+LAST_MONTH = (TODAY.replace(day=1) - timedelta(days=1))
+STATEMENTS = [
+    {
+        "id": 1, "owner_id": 1, "year": LAST_MONTH.year, "month": LAST_MONTH.month,
+        "rental_income": Decimal("16200.00"), "management_fees": Decimal("4300.00"),
+        "cleaning_costs": Decimal("1050.00"), "net_due": Decimal("10850.00"),
+        "status": "draft", "generated_on": TODAY, "paid_on": None, "notes": "",
+        "lines": [],
+    }
+]
 CLEANERS = [CleaningStaff(1, "Nomsa Dlamini", "082 555 0777")]
 SERVICES = [
     CleaningServiceType(None, label, Decimal("450.00"), 120) for label in CLEAN_TYPES
@@ -98,6 +117,12 @@ def stubbed_database(monkeypatch):
     monkeypatch.setattr(queries, "list_seasons", lambda year=None: SEASONS)
     monkeypatch.setattr(queries, "list_season_years", lambda: [YEAR])
     monkeypatch.setattr(queries, "list_client_rates", lambda unit_id=None, year=None: RATES)
+    monkeypatch.setattr(queries, "list_owner_rates", lambda unit_id=None, year=None: OWNER_RATES)
+    monkeypatch.setattr(queries, "list_statements", lambda year=None, statuses=None: STATEMENTS)
+    monkeypatch.setattr(queries, "get_statement", lambda statement_id: STATEMENTS[0])
+    monkeypatch.setattr(queries, "find_statement", lambda owner_id, year, month: None)
+    monkeypatch.setattr(queries, "save_statement", lambda statement, lines: 1)
+    monkeypatch.setattr(queries, "set_statement_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(queries, "list_clients", lambda: CLIENTS)
     monkeypatch.setattr(
         queries, "list_bookings",
@@ -154,7 +179,7 @@ def test_page_runs_with_an_empty_database(path, stubbed_database, monkeypatch):
     for name in ("list_owners", "list_units", "list_seasons", "list_client_rates",
                  "list_clients", "list_bookings", "list_turnover_rules", "list_unit_blocks",
                  "list_quotes", "list_cleaning_staff", "list_cleaning_jobs",
-                 "list_unit_cleaning_rates"):
+                 "list_unit_cleaning_rates", "list_owner_rates", "list_statements"):
         monkeypatch.setattr(queries, name, lambda *args, **kwargs: [])
     monkeypatch.setattr(queries, "list_season_years", lambda: [])
 
@@ -785,3 +810,58 @@ def test_moving_a_job_onto_a_day_that_is_taken_is_explained(stubbed_database, mo
 
     assert any("only gets one clean a day" in element.value for element in app.error)
     assert not app.exception
+
+
+def test_statements_page_totals_what_is_owed_and_what_is_unpaid(stubbed_database):
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Statements"] == "1"
+    assert metrics["Total due to owners"] == "R10 850.00"
+    assert metrics["Still to pay"] == "R10 850.00"
+
+
+def test_working_out_a_month_writes_one_statement_per_owner(stubbed_database, monkeypatch):
+    written = []
+    monkeypatch.setattr(
+        queries, "save_statement",
+        lambda statement, lines: written.append((statement.owner_id, statement.net)) or 1,
+    )
+
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+    button = next(b for b in app.button if b.label.startswith("Work out"))
+    button.click().run()
+
+    # Two owners in the fixture, each with one flat.
+    assert len(written) == 2
+    # The message has to survive the rerun that follows, or nobody sees it.
+    assert any("statement(s) worked out" in element.value for element in app.success)
+
+
+def test_marking_a_statement_paid_records_the_date(stubbed_database, monkeypatch):
+    recorded = []
+    monkeypatch.setattr(
+        queries, "set_statement_status",
+        lambda statement_id, status, paid_on=None: recorded.append((statement_id, status, paid_on)),
+    )
+
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+    button_labelled(app, "Confirm payment").click().run()
+
+    assert recorded == [(1, "paid", TODAY)]
+
+
+def test_a_statement_whose_figures_have_moved_says_so(stubbed_database):
+    """A booking added after the month was worked out must not go unnoticed."""
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+
+    # The fixture's stored net is 10 850; recomputing from the stubbed data
+    # gives something else, which is exactly the case worth flagging.
+    assert any("figures have moved" in element.value for element in app.warning)
+
+
+def test_the_statement_page_explains_why_cleaning_may_be_nothing(stubbed_database):
+    app = AppTest.from_file("pages/8_Statements.py", default_timeout=60).run()
+
+    captions = " ".join(element.value for element in app.caption)
+    assert "Only cleans marked done are billed on" in captions

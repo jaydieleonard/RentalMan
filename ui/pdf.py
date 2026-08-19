@@ -57,13 +57,14 @@ def _styles() -> dict[str, ParagraphStyle]:
     }
 
 
-def _letterhead(style, reference: int | None, generated_on: date | None, business_name: str):
+def _letterhead(style, reference: int | None, generated_on: date | None,
+                business_name: str, heading: str = "Quote"):
     """Logo on the left, what the document is on the right.
 
     The guest sees this page and nothing else of the business, so it carries
     the mark rather than a plain word at the top of an otherwise blank sheet.
     """
-    meta = "Quote"
+    meta = heading
     if reference:
         meta += f"<br/>Reference {reference}"
     if generated_on:
@@ -187,5 +188,117 @@ def _price_table(lines: Sequence[QuoteLine], total: Decimal, style) -> Table:
         ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return table
+
+
+def statement_pdf(
+    owner_name: str,
+    statement,
+    reference: int | None = None,
+    generated_on: date | None = None,
+    business_name: str = "RentalMan",
+) -> bytes:
+    """An owner's month, itemised per flat then totalled (spec 3.8).
+
+    Each flat gets its own block - income, then what comes off it, then the net
+    for that flat - so an owner with several can see which one earned and which
+    one cost. No tax line: the figure at the bottom is simply what is owed.
+    """
+    style = _styles()
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=20 * mm,
+        title=f"Statement {statement.period_name} - {owner_name}",
+        author=business_name,
+    )
+
+    story = [
+        _letterhead(style, reference, generated_on, business_name, heading="Statement"),
+        Spacer(1, 14),
+        Paragraph(f"<b>{owner_name}</b>", style["body"]),
+        Paragraph(statement.period_name, style["sub"]),
+    ]
+
+    for unit in statement.units:
+        story.append(Paragraph(f"<b>{unit.unit_name}</b>", style["body"]))
+        rows = [["", "", ""]]
+        rows = [[
+            "Rental income",
+            f"{unit.nights} night(s) let" if unit.nights else "not let this month",
+            money(unit.rental_income),
+        ]]
+        for share in unit.stays:
+            for line in share.lines:
+                rows.append([
+                    "",
+                    f"    {line.first_night.strftime('%d %b')} - "
+                    f"{line.last_night.strftime('%d %b')}: {line.nights} x "
+                    f"{money(line.nightly_rate)} ({line.season_label})",
+                    money(line.subtotal),
+                ])
+        rows.append(["Management fee", "", f"({money(unit.management_fee)})"])
+        rows.append([
+            "Cleaning",
+            f"{len(unit.cleans)} clean(s)" if unit.cleans else "none",
+            f"({money(unit.cleaning_cost)})",
+        ])
+        for job in unit.cleans:
+            rows.append(["", f"    {job.date.strftime('%d %b')}: {job.service_label}",
+                         f"({money(job.cost)})"])
+        rows.append(["Net for this flat", "", money(unit.net)])
+        story.extend([_unit_table(rows), Spacer(1, 12)])
+
+    story.extend([
+        Spacer(1, 4),
+        _totals_table([
+            ["Rental income", money(statement.rental_income)],
+            ["Less management fees", f"({money(statement.management_fees)})"],
+            ["Less cleaning", f"({money(statement.cleaning_costs)})"],
+            ["Net due to you", money(statement.net)],
+        ]),
+        Spacer(1, 16),
+        Paragraph(
+            "Figures in brackets are deducted. Rental income is the nights actually "
+            "let during the month, valued at the agreed nightly rate for the season "
+            "each night falls in.",
+            style["small"],
+        ),
+    ])
+
+    document.build(story)
+    return buffer.getvalue()
+
+
+def _unit_table(rows) -> Table:
+    table = Table(rows, colWidths=[38 * mm, None, 30 * mm], hAlign="LEFT")
+    last = len(rows) - 1
+    table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), INK),
+        ("TEXTCOLOR", (1, 0), (1, -1), MUTED),
+        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
+        ("LINEABOVE", (0, last), (-1, last), 0.5, RULE),
+        ("FONTNAME", (0, last), (-1, last), "Helvetica-Bold"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return table
+
+
+def _totals_table(rows) -> Table:
+    table = Table(rows, colWidths=[None, 34 * mm], hAlign="LEFT")
+    last = len(rows) - 1
+    table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("BACKGROUND", (0, 0), (-1, -1), BAND),
+        ("LINEABOVE", (0, last), (-1, last), 0.9, INK),
+        ("FONTNAME", (0, last), (-1, last), "Helvetica-Bold"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (0, -1), 8),
+        ("RIGHTPADDING", (1, 0), (1, -1), 8),
     ]))
     return table

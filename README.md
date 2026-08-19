@@ -19,6 +19,9 @@ numbers referenced in the code point there.
   accepting one makes the booking that holds the dates
 - Cleaning: staff, service costs, the jobs worked out from the bookings, and a
   month-at-a-glance calendar of who is cleaning what
+- Owner accounting: owner rates per flat and season, monthly statements pulling
+  together rental income, the management fee and the cleans actually done, as a
+  PDF, with paid/not-paid tracked against each one
 
 Bookings can be entered and corrected by hand on the Bookings page, brought
 forward from Phase 3 so the flats' existing bookings can be captured now. Every
@@ -67,6 +70,7 @@ lib/              Business logic — no database, no Streamlit, fully tested
   availability.py   Turnover buffers and what blocks a unit
   quotes.py         The guest-facing message and the follow-up flag
   cleaning.py       Which cleans a flat needs, and when
+  statements.py     What each owner is owed for a month
 db/               Connection, migrations, and the queries the pages run
   schema/           Numbered .sql files, applied in order and never edited
 ui/               Streamlit-side helpers: the grid, PDFs, formatting, login
@@ -113,6 +117,14 @@ needs it: it connects from its own host, not from a laptop behind a firewall.
 - Only `confirmed` bookings hold dates. Enquiries and unaccepted quotes do not
   take a flat off the market (`BLOCKING_STATUSES` in `lib/models.py`).
 - Money is `Decimal` everywhere, never `float`.
+- Owner income is the nights **clipped to the month** and then priced, so a stay
+  running from the 28th to the 3rd puts three nights on one statement and two on
+  the next rather than landing whole on whichever month it started in.
+- The owner rate is never derived from the client rate. The business earns from
+  the management fee, so the two are set independently and neither follows the
+  other.
+- Only cleans marked **done** are billed to an owner. A job still showing as
+  scheduled has not been carried out.
 - A saved quote keeps its own priced lines. Reopening one shows what the guest
   was told, not what today's rate file would charge.
 - The follow-up flag is derived on read, never stored — so it is always true

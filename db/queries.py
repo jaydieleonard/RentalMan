@@ -20,6 +20,7 @@ from lib.models import (
     Client,
     ClientRate,
     Owner,
+    OwnerRate,
     QuoteLine,
     SavedQuote,
     SeasonDefinition,
@@ -847,3 +848,120 @@ def schedule_jobs(planned: Sequence, costs: Mapping[tuple[int, str], Decimal]) -
             if cursor.fetchone():
                 added += 1
     return added
+
+
+# --- Owner rates ----------------------------------------------------------
+
+def list_owner_rates(unit_id: int | None = None, year: int | None = None) -> list[OwnerRate]:
+    clauses, params = [], []
+    if unit_id is not None:
+        clauses.append("unit_id = %s")
+        params.append(unit_id)
+    if year is not None:
+        clauses.append("year = %s")
+        params.append(year)
+    sql = "SELECT * FROM owner_rates"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    rows = fetch_all(sql + " ORDER BY year DESC, season_label", tuple(params))
+    return [
+        OwnerRate(r["unit_id"], r["season_label"], r["year"], r["nightly_rate"]) for r in rows
+    ]
+
+
+def save_owner_rate(unit_id: int, season_label: str, year: int, nightly_rate: Decimal) -> None:
+    execute(
+        """INSERT INTO owner_rates (unit_id, season_label, year, nightly_rate)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (unit_id, season_label, year)
+           DO UPDATE SET nightly_rate = EXCLUDED.nightly_rate""",
+        (unit_id, season_label, year, nightly_rate),
+    )
+
+
+def delete_owner_rate(unit_id: int, season_label: str, year: int) -> None:
+    execute(
+        "DELETE FROM owner_rates WHERE unit_id = %s AND season_label = %s AND year = %s",
+        (unit_id, season_label, year),
+    )
+
+
+# --- Owner statements -----------------------------------------------------
+
+def list_statements(year: int | None = None, statuses: Iterable[str] | None = None) -> list[dict]:
+    clauses, params = [], []
+    if year is not None:
+        clauses.append("year = %s")
+        params.append(year)
+    if statuses is not None:
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        clauses.append("status = ANY(%s)")
+        params.append(statuses)
+    sql = "SELECT * FROM owner_statements"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    return fetch_all(sql + " ORDER BY year DESC, month DESC, owner_id", tuple(params))
+
+
+def get_statement(statement_id: int) -> dict | None:
+    row = fetch_one("SELECT * FROM owner_statements WHERE id = %s", (statement_id,))
+    if row is None:
+        return None
+    row["lines"] = fetch_all(
+        "SELECT * FROM owner_statement_lines WHERE statement_id = %s ORDER BY line_number",
+        (statement_id,),
+    )
+    return row
+
+
+def find_statement(owner_id: int, year: int, month: int) -> dict | None:
+    return fetch_one(
+        "SELECT * FROM owner_statements WHERE owner_id = %s AND year = %s AND month = %s",
+        (owner_id, year, month),
+    )
+
+
+def save_statement(statement, lines: Sequence[tuple[int, str, str, Decimal]]) -> int:
+    """Store a worked-out statement, replacing any earlier run for that month.
+
+    Replacing rather than adding: one statement per owner per month is the
+    whole point, and regenerating after a late booking should correct the
+    figures rather than leave the owner holding two different answers.
+    """
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """INSERT INTO owner_statements
+                   (owner_id, year, month, rental_income, management_fees,
+                    cleaning_costs, net_due)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (owner_id, year, month) DO UPDATE
+                   SET rental_income   = EXCLUDED.rental_income,
+                       management_fees = EXCLUDED.management_fees,
+                       cleaning_costs  = EXCLUDED.cleaning_costs,
+                       net_due         = EXCLUDED.net_due,
+                       generated_on    = CURRENT_DATE
+               RETURNING id""",
+            (statement.owner_id, statement.year, statement.month, statement.rental_income,
+             statement.management_fees, statement.cleaning_costs, statement.net),
+        )
+        statement_id = cursor.fetchone()["id"]
+        cursor.execute(
+            "DELETE FROM owner_statement_lines WHERE statement_id = %s", (statement_id,)
+        )
+        for number, (unit_id, kind, description, amount) in enumerate(lines, start=1):
+            cursor.execute(
+                """INSERT INTO owner_statement_lines
+                       (statement_id, unit_id, line_number, kind, description, amount)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (statement_id, unit_id, number, kind, description, amount),
+            )
+    return statement_id
+
+
+def set_statement_status(statement_id: int, status: str, paid_on: date | None = None) -> None:
+    execute(
+        "UPDATE owner_statements SET status = %s, paid_on = %s WHERE id = %s",
+        (status, paid_on, statement_id),
+    )

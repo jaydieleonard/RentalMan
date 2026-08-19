@@ -192,6 +192,28 @@ class QuoteLine:
     subtotal: Decimal
 
 
+@dataclass(frozen=True)
+class OwnerRate:
+    """6 Owner Rate - the nightly amount due to the owner (3.7).
+
+    The same shape as ClientRate and deliberately a separate figure: the
+    business earns from the monthly management fee, not from a margin between
+    the two, so one is never derived from the other.
+    """
+
+    unit_id: int
+    season_label: str
+    year: int
+    nightly_rate: Decimal
+
+
+# Owner statement statuses (6).
+DRAFT = "draft"
+SENT = "sent"
+PAID = "paid"
+STATEMENT_STATUSES = (DRAFT, SENT, PAID)
+
+
 # Clean types (3.10). Each is a distinct service with its own cost.
 CHANGEOVER_CLEAN = "changeover clean"
 POST_CLEAN = "post-clean"
