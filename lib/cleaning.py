@@ -43,6 +43,16 @@ from lib.models import (
 
 ONE_DAY = timedelta(days=1)
 
+#: A flat gets at most one clean a day - one visit, one charge to the owner.
+#: Where the rules want two on the same day, the one higher up this list stays
+#: put and the other is moved on. The order runs from the cleans that cannot
+#: move, because a guest is arriving or leaving that day, down to the ones that
+#: only have to happen eventually.
+PRIORITY = (CHANGEOVER_CLEAN, POST_CLEAN, PRE_CLEAN, LIGHT_CLEAN, DEEP_CLEAN)
+
+#: How far a displaced clean is allowed to slide before it is given up on.
+MAX_DEFERRAL_DAYS = 14
+
 #: A stay longer than this gets a mid-stay tidy, one every LIGHT_CLEAN_EVERY
 #: nights after that. Both are defaults the parents can move per unit.
 LIGHT_CLEAN_AFTER_NIGHTS = 10
@@ -190,26 +200,52 @@ def plan_for_unit(
                 "Periodic deep clean, whether or not anyone is staying",
             ))
 
-    # With a buffer of exactly one night the post-clean and the pre-clean fall
-    # on the same day - the flat is only empty for that one day. Sending
-    # somebody twice would charge the owner twice for work one visit covers,
-    # so the pre-clean gives way to the clean already happening.
-    being_cleaned = {
-        job.date for job in planned if job.service_label in (POST_CLEAN, CHANGEOVER_CLEAN)
-    }
-    planned = [
-        job for job in planned
-        if not (job.service_label == PRE_CLEAN and job.date in being_cleaned)
-    ]
-
-    seen, unique = set(), []
-    for job in planned:
-        if job.key not in seen:
-            seen.add(job.key)
-            unique.append(job)
-
-    inside = [job for job in unique if window_start <= job.date < window_end]
+    resolved = one_clean_per_day(planned, window_end)
+    inside = [job for job in resolved if window_start <= job.date < window_end]
     return sorted(inside, key=lambda job: (job.date, job.service_label))
+
+
+def one_clean_per_day(planned: Sequence[PlannedJob], window_end: date) -> list[PlannedJob]:
+    """Reduce a flat's planned cleans to at most one a day.
+
+    Two cleans on one flat on one day means sending somebody twice and charging
+    the owner twice for a single visit. Where the rules ask for that - a buffer
+    of exactly one night puts the post-clean and the pre-clean on the same day,
+    a deep clean can fall due on a changeover - the fixed one stays and the
+    other moves.
+
+    Moved, not dropped: a mid-stay tidy or a deep clean that collides still
+    needs doing, so it slides to the next free day. Only one that cannot find a
+    day inside `MAX_DEFERRAL_DAYS` is given up on, and then it is the least
+    urgent kind by definition, since the urgent ones never move.
+    """
+    order = {label: rank for rank, label in enumerate(PRIORITY)}
+    taken: dict[date, PlannedJob] = {}
+    displaced: list[PlannedJob] = []
+
+    for job in sorted(planned, key=lambda j: (j.date, order.get(j.service_label, 99))):
+        holder = taken.get(job.date)
+        if holder is None:
+            taken[job.date] = job
+        elif holder.key == job.key:
+            continue  # the same clean planned twice over
+        else:
+            displaced.append(job)
+
+    for job in displaced:
+        day = job.date + ONE_DAY
+        limit = job.date + MAX_DEFERRAL_DAYS * ONE_DAY
+        while day in taken and day <= limit:
+            day += ONE_DAY
+        if day in taken or day >= window_end:
+            continue  # nowhere to put it; it will come round again next time
+        taken[day] = PlannedJob(
+            job.unit_id, day, job.service_label, job.booking_id,
+            f"{job.reason} (moved from {job.date.isoformat()}, "
+            f"the flat was already being cleaned that day)",
+        )
+
+    return list(taken.values())
 
 
 def cost_for(

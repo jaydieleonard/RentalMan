@@ -125,3 +125,7 @@ needs it: it connects from its own host, not from a laptop behind a firewall.
 - Working out the cleans never touches a job already on the calendar. One moved
   or reassigned by hand was moved by a person who knew something the rules did
   not.
+- A flat gets at most one clean a day — one visit, one charge to the owner.
+  Where two would fall together, the clean tied to a guest arriving or leaving
+  stays put and the flexible one (a deep clean, a mid-stay tidy) moves to the
+  next free day. The database holds the rule too, so nothing can slip past it.

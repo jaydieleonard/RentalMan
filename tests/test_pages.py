@@ -769,3 +769,19 @@ def test_the_totals_follow_the_cleaner_being_shown(stubbed_database, monkeypatch
     app.selectbox[0].select("Nomsa Dlamini").run()
 
     assert {m.label: m.value for m in app.metric}["Cleans this month"] == "1"
+
+
+def test_moving_a_job_onto_a_day_that_is_taken_is_explained(stubbed_database, monkeypatch):
+    """The flat only gets one clean a day, and the message should say so."""
+    def refuse(job_id, **fields):
+        raise queries.CleaningClash(
+            "That flat is already being cleaned that day, and it only gets one clean a day."
+        )
+
+    monkeypatch.setattr(queries, "update_cleaning_job", refuse)
+
+    app = AppTest.from_file("pages/7_Cleaning.py", default_timeout=30).run()
+    button_labelled(app, "Save job").click().run()
+
+    assert any("only gets one clean a day" in element.value for element in app.error)
+    assert not app.exception

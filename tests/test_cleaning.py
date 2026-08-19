@@ -197,3 +197,71 @@ def test_splitting_drops_chunks_that_are_only_comments():
 
     assert split_statements("-- nothing here\n\n") == []
     assert len(split_statements("SELECT 1; -- trailing note\n")) == 1
+
+
+def test_a_flat_never_gets_two_cleans_on_one_day():
+    """A deep clean falling due on a changeover day, plus a stay long enough to
+    be tidied partway through - plenty of chances to collide."""
+    jobs = plan_for_unit(
+        UNIT, JANUARY, FEBRUARY,
+        [stay((2027, 1, 2), (2027, 1, 20), id=1), stay((2027, 1, 20), (2027, 1, 28), id=2)],
+        (), SEASONS, deep_every_days=3,
+    )
+
+    days = [job.date for job in jobs]
+    assert len(days) == len(set(days)), sorted(days)
+
+
+def test_the_guest_driven_clean_stays_put_and_the_deep_clean_moves():
+    """A changeover cannot move - somebody is arriving that afternoon."""
+    jobs = plan_for_unit(
+        UNIT, JANUARY, FEBRUARY,
+        [stay((2027, 1, 4), (2027, 1, 8), id=1), stay((2027, 1, 8), (2027, 1, 12), id=2)],
+        (), SEASONS, deep_every_days=None, last_deep_clean=None,
+    )
+    changeover = next(job for job in jobs if job.service_label == CHANGEOVER_CLEAN)
+    assert changeover.date == date(2027, 1, 8)
+
+    with_deep = plan_for_unit(
+        UNIT, JANUARY, FEBRUARY,
+        [stay((2027, 1, 4), (2027, 1, 8), id=1), stay((2027, 1, 8), (2027, 1, 12), id=2)],
+        (), SEASONS, deep_every_days=7, last_deep_clean=date(2027, 1, 1),
+    )
+    changeover = next(job for job in with_deep if job.service_label == CHANGEOVER_CLEAN)
+    deep = next(job for job in with_deep if job.service_label == DEEP_CLEAN)
+
+    assert changeover.date == date(2027, 1, 8), "the guest's clean does not move"
+    assert deep.date != date(2027, 1, 8), "the deep clean gives way"
+    assert deep.date > date(2027, 1, 8)
+
+
+def test_a_moved_clean_says_where_it_came_from():
+    jobs = plan_for_unit(
+        UNIT, JANUARY, FEBRUARY,
+        [stay((2027, 1, 4), (2027, 1, 8), id=1), stay((2027, 1, 8), (2027, 1, 12), id=2)],
+        (), SEASONS, deep_every_days=7, last_deep_clean=date(2027, 1, 1),
+    )
+
+    moved = [job for job in jobs if "moved from" in job.reason]
+    assert moved, [job.reason for job in jobs]
+    assert "already being cleaned that day" in moved[0].reason
+
+
+def test_a_displaced_clean_that_can_find_no_day_is_given_up_on():
+    """Rather than piling up or landing outside the period being planned."""
+    from lib.cleaning import PlannedJob, one_clean_per_day
+
+    end = date(2027, 1, 5)
+    crowd = [
+        PlannedJob(UNIT, date(2027, 1, 1), CHANGEOVER_CLEAN, 1, "a"),
+        PlannedJob(UNIT, date(2027, 1, 1), DEEP_CLEAN, None, "b"),
+        PlannedJob(UNIT, date(2027, 1, 2), POST_CLEAN, 2, "c"),
+        PlannedJob(UNIT, date(2027, 1, 3), POST_CLEAN, 3, "d"),
+        PlannedJob(UNIT, date(2027, 1, 4), POST_CLEAN, 4, "e"),
+    ]
+
+    kept = one_clean_per_day(crowd, window_end=end)
+
+    days = [job.date for job in kept]
+    assert len(days) == len(set(days))
+    assert DEEP_CLEAN not in [job.service_label for job in kept]

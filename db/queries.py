@@ -360,6 +360,10 @@ def create_unit_block(unit_id: int, start_date: date, end_date: date, reason: st
     return row["id"]
 
 
+class CleaningClash(Exception):
+    """That flat already has a clean on that day, and it only gets one."""
+
+
 class BookingClash(Exception):
     """The database refused a booking because those nights are already taken.
 
@@ -770,12 +774,12 @@ def create_cleaning_job(
     booking_id: int | None = None,
     notes: str = "",
 ) -> int | None:
-    """Add one job. Returns None if that flat already has that clean that day."""
+    """Add one job. Returns None if that flat is already being cleaned that day."""
     row = execute(
         """INSERT INTO cleaning_jobs (unit_id, date, service_label, cost, staff_id,
                                       booking_id, notes)
            VALUES (%s, %s, %s, %s, %s, %s, %s)
-           ON CONFLICT (unit_id, date, service_label) DO NOTHING
+           ON CONFLICT (unit_id, date) DO NOTHING
            RETURNING id""",
         (unit_id, day, service_label, cost, staff_id, booking_id, notes),
     )
@@ -788,8 +792,23 @@ def update_cleaning_job(job_id: int, **fields: Any) -> None:
     if not names:
         return
     sets = ", ".join(f"{name} = %s" for name in names)
-    execute(f"UPDATE cleaning_jobs SET {sets} WHERE id = %s",
-            (*(fields[n] for n in names), job_id))
+    try:
+        execute(f"UPDATE cleaning_jobs SET {sets} WHERE id = %s",
+                (*(fields[n] for n in names), job_id))
+    except Exception as error:
+        raise _as_cleaning_clash(error) from error
+
+
+def _as_cleaning_clash(error: Exception) -> Exception:
+    """Turn the one-clean-a-day constraint into something a page can explain."""
+    import psycopg
+
+    if isinstance(error, psycopg.errors.UniqueViolation):
+        return CleaningClash(
+            "That flat is already being cleaned that day, and it only gets one clean "
+            "a day. Move the other job first, or pick a different date."
+        )
+    return error
 
 
 def delete_cleaning_job(job_id: int) -> None:
@@ -819,7 +838,7 @@ def schedule_jobs(planned: Sequence, costs: Mapping[tuple[int, str], Decimal]) -
             cursor.execute(
                 """INSERT INTO cleaning_jobs (unit_id, date, service_label, cost, booking_id, notes)
                    VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (unit_id, date, service_label) DO NOTHING
+                   ON CONFLICT (unit_id, date) DO NOTHING
                    RETURNING id""",
                 (job.unit_id, job.date, job.service_label,
                  costs.get((job.unit_id, job.service_label), Decimal("0.00")),

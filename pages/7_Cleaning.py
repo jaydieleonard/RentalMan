@@ -127,8 +127,10 @@ with jobs_tab:
     st.markdown("**Work the cleans out from the bookings**")
     st.caption(
         "Reads the flats' turnover rules and the stays on the calendar, and adds "
-        "anything missing. Jobs already scheduled are left exactly as they are, "
-        "including ones you have moved or reassigned by hand."
+        "anything missing. A flat gets at most one clean a day - where two would "
+        "fall together, the guest's clean stays put and the deep clean or mid-stay "
+        "tidy moves to the next free day. Jobs already scheduled are left exactly "
+        "as they are, including ones you have moved or reassigned by hand."
     )
 
     span = st.columns([2, 2, 2])
@@ -250,16 +252,20 @@ with jobs_tab:
 
         actions = st.columns([2, 2, 4])
         if actions[0].button("Save job", type="primary", key=f"job_save_{job.id}"):
-            queries.update_cleaning_job(
-                job.id,
-                date=new_date,
-                staff_id=None if new_cleaner == "Nobody yet"
-                else next(m.id for m in staff if m.name == new_cleaner),
-                status=new_status,
-                cost=Decimal(str(new_cost)),
-            )
-            st.success(f"Job #{job.id} updated.")
-            st.rerun()
+            try:
+                queries.update_cleaning_job(
+                    job.id,
+                    date=new_date,
+                    staff_id=None if new_cleaner == "Nobody yet"
+                    else next(m.id for m in staff if m.name == new_cleaner),
+                    status=new_status,
+                    cost=Decimal(str(new_cost)),
+                )
+            except queries.CleaningClash as clash:
+                st.error(str(clash))
+            else:
+                st.success(f"Job #{job.id} updated.")
+                st.rerun()
 
         with actions[1].popover("Delete"):
             st.caption(
