@@ -1102,3 +1102,48 @@ def test_the_payments_page_is_calm_with_nothing_recorded(stubbed_database, monke
 
     assert not app.exception
     assert any("No payments recorded" in element.value for element in app.info)
+
+
+def test_a_hosted_app_with_no_password_shows_nothing(stubbed_database, monkeypatch):
+    """A public address with no password is every owner's banking details."""
+    import ui.auth
+
+    monkeypatch.setattr(ui.auth, "is_hosted", lambda: True)
+    monkeypatch.setattr(ui.auth, "configured_password", lambda: None)
+
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+
+    assert any("No password is set" in element.value for element in app.error)
+    assert any("[auth]" in element.value for element in app.code)
+    # Nothing beyond the warning: no metrics, no data.
+    assert not app.metric
+
+
+def test_a_developers_machine_is_not_locked_out(stubbed_database, monkeypatch):
+    """Refusing here would keep somebody out of their own laptop for no gain."""
+    import ui.auth
+
+    monkeypatch.setattr(ui.auth, "is_hosted", lambda: False)
+    monkeypatch.setattr(ui.auth, "configured_password", lambda: None)
+
+    app = AppTest.from_file("app.py", default_timeout=30).run()
+
+    assert not any("No password is set" in element.value for element in app.error)
+    assert app.metric
+
+
+def test_the_right_password_gets_in_and_a_wrong_one_does_not(stubbed_database, monkeypatch):
+    import ui.auth
+
+    monkeypatch.setattr(ui.auth, "configured_password", lambda: "seaview")
+
+    app = AppTest.from_file("app.py", default_timeout=30)
+    app.run()
+    assert not app.metric, "nothing is shown before signing in"
+
+    app.text_input[0].set_value("wrong").run()
+    assert any("not right" in element.value for element in app.error)
+    assert not app.metric
+
+    app.text_input[0].set_value("seaview").run()
+    assert app.metric, "the home page appears once the password is right"

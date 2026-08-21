@@ -6,19 +6,36 @@ on deploy and it never reaches Git. That is enough to keep owner banking
 details and financial statements off the open web without building user
 management nobody asked for.
 
-With no password set - local development - the gate stands aside rather than
-locking the developer out of their own machine.
+With no password set the gate stands aside on a developer's own machine, and
+refuses outright on a hosted one. That asymmetry is the point: locking someone
+out of their own laptop helps nobody, while a deployment with no password is
+the flats, the owners, their banking details and every statement, open to
+whoever has the address.
 """
 
 from __future__ import annotations
 
 import hmac
+from pathlib import Path
 
 import streamlit as st
 
 from ui.brand import LOGO
 
 SESSION_KEY = "rentalman_authenticated"
+
+#: Where Streamlit Community Cloud checks the repository out. Running from
+#: there means the app is on the open internet rather than on somebody's desk.
+HOSTED_PREFIX = "/mount/src"
+
+NO_PASSWORD_HELP = """This app is deployed without a password, so it is not showing anything.
+
+Add a password in the app's secrets - Manage app, then Settings, then Secrets:
+
+    [auth]
+    password = "something you and your parents will remember"
+
+Saving it restarts the app, and the sign-in screen appears."""
 
 
 def configured_password() -> str | None:
@@ -28,10 +45,21 @@ def configured_password() -> str | None:
         return None
 
 
+def is_hosted() -> bool:
+    """Is this running on a public host rather than a development machine?"""
+    return str(Path(__file__).resolve()).replace("\\", "/").startswith(HOSTED_PREFIX)
+
+
 def require_login() -> None:
     """Stop the page unless the visitor has entered the shared password."""
     password = configured_password()
     if not password:
+        if is_hosted():
+            # Fail closed. The alternative is a public address serving owner
+            # banking details to anyone who finds it.
+            st.error("No password is set for this app.")
+            st.code(NO_PASSWORD_HELP, language="text")
+            st.stop()
         return
     if st.session_state.get(SESSION_KEY):
         return

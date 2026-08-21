@@ -61,9 +61,19 @@ streamlit run app.py
 ```
 
 Deploying to Streamlit Community Cloud: point it at this repository and paste
-the same `secrets.toml` contents into the app's secrets box. Add an `[auth]`
-section with a `password` to put a shared password in front of the app; without
-one the gate stands aside, which is what you want on your own machine.
+the same `secrets.toml` contents into the app's secrets box, including an
+`[auth]` section with a `password`.
+
+Then set the app's sharing to **public**. Community Cloud's own "private app"
+setting requires every viewer to hold a Streamlit account and be invited by
+email, which is a wall in front of people who only need the app - the shared
+password is the gate instead.
+
+That makes the password load-bearing, so the app refuses to show anything when
+it is running on a host without one: a public address with no password is the
+flats, the owners, their banking details and every statement, open to whoever
+finds it. On a development machine, where there is nothing to expose that is
+not already on the disk, the gate stands aside instead.
 
 ## Layout
 
